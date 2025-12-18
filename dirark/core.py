@@ -10,6 +10,7 @@ DB_NAME = "index.sqlite"
 SEP = "-"
 TAR_PREFIX = "data" + SEP
 TAR_EXT = ".tar.zst"
+ARK_DIR_EXT = ".ark.d"
 
 
 def b2sum(path: Path) -> str:
@@ -82,7 +83,9 @@ def create_tar_zst(src_dir: Path, out: Path):
     )
 
 
-def merge_dir(ark_dir: Path, ark_dir_out: Path):
+def archive_dir(ark_dir: Path):
+    ark_dir_out = Path(f"{ark_dir}.{ARK_DIR_EXT}")
+    ark_dir_out.mkdir(exist_ok=True, parents=True)
     ensure_clean_outdir(ark_dir_out)
     db = open_db(ark_dir_out / DB_NAME)
     cur = db.cursor()
@@ -155,3 +158,58 @@ def merge_dir(ark_dir: Path, ark_dir_out: Path):
 
     db.commit()
     db.close()
+
+
+def restore_ark(ark_dir: Path, dest_dir: Path):
+    db = open_db(ark_dir / DB_NAME)
+    cur = db.cursor()
+
+    # Get all files and their checksums
+    cur.execute("SELECT path, checksum FROM files")
+    files_to_restore = cur.fetchall()
+
+    if not files_to_restore:
+        print("No files found to restore in the archive.")
+        db.close()
+        return
+
+    dest_dir.mkdir(parents=True, exist_ok=True)  # Create dest_dir only if there are files to restore
+
+    # Map checksums to tar_names
+    checksum_to_tar = {}
+    cur.execute("SELECT checksum, tar_name FROM objects")
+    for checksum, tar_name in cur.fetchall():
+        checksum_to_tar[checksum] = tar_name
+
+    db.close()
+
+    # Group files by the tar archive they belong to
+    tar_to_files = defaultdict(list)
+    for rel_path, checksum in files_to_restore:
+        tar_name = checksum_to_tar.get(checksum)
+        if tar_name:
+            tar_to_files[ark_dir / tar_name].append((rel_path, checksum))
+        else:
+            print(f"Warning: Checksum {checksum} for file {rel_path} not found in objects table. Skipping.")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        obj_dir = tmp_path / "objects"
+        obj_dir.mkdir()
+
+        for tar_path, files in tar_to_files.items():
+            if not tar_path.exists():
+                print(f"Warning: Tar file {tar_path.name} not found. Some files might not be restored.")
+                continue
+
+            # Extract tar content to temp directory
+            extract_tar_zst(tar_path, tmp_path)
+
+            for rel_path, checksum in files:
+                src_obj_path = obj_dir / checksum
+                dest_file_path = dest_dir / rel_path
+                dest_file_path.parent.mkdir(parents=True, exist_ok=True)
+                if src_obj_path.exists():
+                    shutil.copy2(src_obj_path, dest_file_path)
+                else:
+                    print(f"Warning: Object {checksum} not found in {tar_path.name}. File {rel_path} not restored.")
