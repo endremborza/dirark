@@ -84,7 +84,7 @@ def create_tar_zst(src_dir: Path, out: Path):
 
 
 def archive_dir(ark_dir: Path):
-    ark_dir_out = Path(f"{ark_dir}.{ARK_DIR_EXT}")
+    ark_dir_out = Path(f"{ark_dir}{ARK_DIR_EXT}")
     ark_dir_out.mkdir(exist_ok=True, parents=True)
     ensure_clean_outdir(ark_dir_out)
     db = open_db(ark_dir_out / DB_NAME)

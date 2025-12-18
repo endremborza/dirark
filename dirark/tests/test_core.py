@@ -3,6 +3,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from dirark.core import (
@@ -145,13 +147,13 @@ class TestDirarkCore(unittest.TestCase):
         self.archive_repo_dir.mkdir()
         open_db(self.archive_repo_dir / DB_NAME).close()
 
-        # Try to restore
-        captured_output = sys.stdout
-        sys.stdout = self._io_object = open("/dev/null", "w")
-        restore_ark(self.archive_repo_dir, self.restore_dir)
-        sys.stdout = captured_output
+        # Try to restore, redirecting stdout to suppress console output
+        with open("/dev/null", "w") as f, redirect_stdout(f):
+            restore_ark(self.archive_repo_dir, self.restore_dir)
 
-        self.assertFalse(self.restore_dir.exists())  # Should not create if nothing to restore
+        self.assertFalse(
+            self.restore_dir.exists()
+        )  # Should not create if nothing to restore
 
     def test_cli_archive_command(self):
         # Using subprocess to test the CLI
@@ -161,7 +163,6 @@ class TestDirarkCore(unittest.TestCase):
             "dirark",
             "archive",
             str(self.source_dir),
-            str(self.archive_repo_dir),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         self.assertIn("Successfully archived", result.stdout)
@@ -175,7 +176,6 @@ class TestDirarkCore(unittest.TestCase):
             "dirark",
             "archive",
             str(self.source_dir),
-            str(self.archive_repo_dir),
         ]
         subprocess.run(archive_cmd, check=True)
 
