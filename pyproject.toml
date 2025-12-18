@@ -1,0 +1,22 @@
+[project]
+name = "dirark"
+dynamic = ["version", "description"]
+authors = [{name = "Endre Márk Borza", email = "endremborza@gmail.com"}]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["branthebuilder"]
+doc = ["branthebuilder[doc]"]
+
+[project.urls]
+Homepage = "https://github.com/endremborza/dirark"
+
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.branb]
+line-length = 88
