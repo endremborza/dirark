@@ -4,7 +4,6 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from io import StringIO
 from pathlib import Path
 
 from dirark.core import (
@@ -151,9 +150,7 @@ class TestDirarkCore(unittest.TestCase):
         with open("/dev/null", "w") as f, redirect_stdout(f):
             restore_ark(self.archive_repo_dir, self.restore_dir)
 
-        self.assertFalse(
-            self.restore_dir.exists()
-        )  # Should not create if nothing to restore
+        self.assertFalse(self.restore_dir.exists())  # Should not create if nothing to restore
 
     def test_cli_archive_command(self):
         # Using subprocess to test the CLI
