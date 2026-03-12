@@ -20,10 +20,6 @@ class ArkReader:
         self._ark_dir = ark_dir
         self._db = open_db(ark_dir / DB_NAME)
 
-    def close(self) -> None:
-        """Close the underlying database connection."""
-        self._db.close()
-
     def __enter__(self) -> "ArkReader":
         return self
 
@@ -65,3 +61,7 @@ class ArkReader:
             tmp_path = Path(tmp)
             extract_object_from_tar(self._ark_dir / tar_name, checksum, tmp_path)
             return (tmp_path / "objects" / checksum).read_bytes()
+
+    def close(self) -> None:
+        """Close the underlying database connection."""
+        self._db.close()
