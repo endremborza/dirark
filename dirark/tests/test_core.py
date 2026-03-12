@@ -1,4 +1,5 @@
-import shutil
+"""Tests for dirark.core: archive_dir and restore_ark."""
+
 import subprocess
 import sys
 import tempfile
@@ -6,210 +7,198 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from dirark.core import (
-    ARK_DIR_EXT,
-    DB_NAME,
-    TAR_EXT,
-    TAR_PREFIX,
-    archive_dir,
-    b2sum,
-    create_tar_zst,
-    extract_tar_zst,
-    open_db,
-    restore_ark,
-)
+from dirark.core import archive_dir, restore_ark
+from dirark.storage import ARK_DIR_EXT, DB_NAME, TAR_EXT, TAR_PREFIX, open_db
 
 
-class TestDirarkCore(unittest.TestCase):
-    def setUp(self):
+class TestArchiveDir(unittest.TestCase):
+    def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.tmp_path = Path(self.tmpdir.name)
-        self.source_dir = self.tmp_path / "source"
-        self.archive_repo_dir = self.tmp_path / ("source" + ARK_DIR_EXT)
-        self.restore_dir = self.tmp_path / "restored"
+        self.tmp = Path(self.tmpdir.name)
+        self.src = self.tmp / "source"
+        self.ark = self.tmp / ("source" + ARK_DIR_EXT)
+        self.src.mkdir()
+        (self.src / "file1.txt").write_text("content of file1")
+        (self.src / "subdir").mkdir()
+        (self.src / "subdir" / "file2.txt").write_text("content of file2")
+        (self.src / "empty_file.txt").touch()
 
-        # Create some dummy files for testing
-        self.source_dir.mkdir()
-        (self.source_dir / "file1.txt").write_text("content of file1")
-        (self.source_dir / "subdir").mkdir()
-        (self.source_dir / "subdir" / "file2.txt").write_text("content of file2")
-        (self.source_dir / "empty_file.txt").touch()
-
-    def tearDown(self):
+    def tearDown(self) -> None:
         self.tmpdir.cleanup()
 
-    def test_b2sum(self):
-        file_path = self.source_dir / "file1.txt"
-        checksum = b2sum(file_path)
-        self.assertIsInstance(checksum, str)
-        self.assertEqual(len(checksum), 128)  # Blake2b checksum length
-
-    def test_create_and_extract_tar_zst(self):
-        test_tar_path = self.tmp_path / f"test{TAR_EXT}"
-        create_tar_zst(self.source_dir, test_tar_path)
-        self.assertTrue(test_tar_path.exists())
-
-        extract_dest = self.tmp_path / "extracted_tar"
-        extract_dest.mkdir()
-        extract_tar_zst(test_tar_path, extract_dest)
-
-        self.assertTrue((extract_dest / "file1.txt").exists())
-        self.assertTrue((extract_dest / "subdir" / "file2.txt").exists())
-        self.assertEqual((extract_dest / "file1.txt").read_text(), "content of file1")
-
-    def test_archive_dir_initial_archive(self):
-        archive_dir(self.source_dir)
-
-        self.assertTrue(self.archive_repo_dir.exists())
-        self.assertTrue((self.archive_repo_dir / DB_NAME).exists())
-        tars = list(self.archive_repo_dir.glob(f"{TAR_PREFIX}*{TAR_EXT}"))
+    def test_initial_archive_creates_structure(self) -> None:
+        archive_dir(self.src)
+        self.assertTrue(self.ark.exists())
+        self.assertTrue((self.ark / DB_NAME).exists())
+        tars = list(self.ark.glob(f"{TAR_PREFIX}*{TAR_EXT}"))
         self.assertGreater(len(tars), 0)
 
-        db = open_db(self.archive_repo_dir / DB_NAME)
+    def test_initial_archive_records_all_files(self) -> None:
+        archive_dir(self.src)
+        db = open_db(self.ark / DB_NAME)
         cur = db.cursor()
-
-        # Check files table
-        cur.execute("SELECT path, checksum FROM files ORDER BY path")
-        files = cur.fetchall()
-        self.assertEqual(len(files), 3)
-        self.assertEqual(files[0][0], "empty_file.txt")
-        self.assertEqual(files[1][0], "file1.txt")
-        self.assertEqual(files[2][0], "subdir/file2.txt")
-
-        # Check objects table
-        cur.execute("SELECT checksum, tar_name FROM objects")
-        objects = cur.fetchall()
-        self.assertGreaterEqual(len(objects), 2)  # At least two unique files
+        cur.execute("SELECT path FROM files ORDER BY path")
+        paths = [row[0] for row in cur.fetchall()]
         db.close()
+        self.assertEqual(paths, ["empty_file.txt", "file1.txt", "subdir/file2.txt"])
 
-    def test_archive_dir_add_new_files(self):
-        # Initial archive
-        archive_dir(self.source_dir)
+    def test_initial_archive_deduplicates_objects(self) -> None:
+        archive_dir(self.src)
+        db = open_db(self.ark / DB_NAME)
+        cur = db.cursor()
+        cur.execute("SELECT COUNT(*) FROM objects")
+        n_objects = cur.fetchone()[0]
+        db.close()
+        self.assertGreaterEqual(n_objects, 2)
 
-        # Add new file to source
-        (self.source_dir / "new_file.txt").write_text("new content")
-        (self.source_dir / "another_subdir").mkdir()
-        (self.source_dir / "another_subdir" / "file3.txt").write_text(
-            "content of file3"
-        )
+    def test_incremental_archive_adds_new_files(self) -> None:
+        archive_dir(self.src)
+        (self.src / "new.txt").write_text("new content")
+        (self.src / "sub2").mkdir()
+        (self.src / "sub2" / "more.txt").write_text("more content")
+        archive_dir(self.src)
 
-        # Merge again
-        archive_dir(self.source_dir)
-
-        db = open_db(self.archive_repo_dir / DB_NAME)
+        db = open_db(self.ark / DB_NAME)
         cur = db.cursor()
         cur.execute("SELECT COUNT(*) FROM files")
-        self.assertEqual(cur.fetchone()[0], 5)  # 3 original + 2 new
+        self.assertEqual(cur.fetchone()[0], 5)
         db.close()
 
-    def test_restore_ark(self):
-        # First, archive some files
-        archive_dir(self.source_dir)
+    def test_idempotent_archiving(self) -> None:
+        archive_dir(self.src)
+        archive_dir(self.src)
+        db = open_db(self.ark / DB_NAME)
+        cur = db.cursor()
+        cur.execute("SELECT COUNT(*) FROM files")
+        self.assertEqual(cur.fetchone()[0], 3)
+        db.close()
 
-        # Now, restore them to a new directory
-        restore_ark(self.archive_repo_dir, self.restore_dir)
+    def test_deduplication_across_paths(self) -> None:
+        (self.src / "dup.txt").write_text("content of file1")
+        archive_dir(self.src)
+        db = open_db(self.ark / DB_NAME)
+        cur = db.cursor()
+        cur.execute("SELECT COUNT(*) FROM files")
+        n_files = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM objects")
+        n_objects = cur.fetchone()[0]
+        db.close()
+        self.assertEqual(n_files, 4)
+        self.assertLess(n_objects, n_files)
 
-        self.assertTrue(self.restore_dir.exists())
-        self.assertTrue((self.restore_dir / "file1.txt").exists())
-        self.assertTrue((self.restore_dir / "subdir" / "file2.txt").exists())
-        self.assertTrue((self.restore_dir / "empty_file.txt").exists())
+    def test_archive_into_existing_ark(self) -> None:
+        self.ark.mkdir()
+        archive_dir(self.src, ark_out=self.ark)
+        db = open_db(self.ark / DB_NAME)
+        cur = db.cursor()
+        cur.execute("SELECT COUNT(*) FROM files")
+        self.assertEqual(cur.fetchone()[0], 3)
+        db.close()
 
+
+class TestRestoreArk(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self.tmpdir.name)
+        self.src = self.tmp / "source"
+        self.ark = self.tmp / ("source" + ARK_DIR_EXT)
+        self.dest = self.tmp / "restored"
+        self.src.mkdir()
+        (self.src / "file1.txt").write_text("content of file1")
+        (self.src / "subdir").mkdir()
+        (self.src / "subdir" / "file2.txt").write_text("content of file2")
+        (self.src / "empty_file.txt").touch()
+
+    def tearDown(self) -> None:
+        self.tmpdir.cleanup()
+
+    def test_restore_recreates_files(self) -> None:
+        archive_dir(self.src)
+        restore_ark(self.ark, self.dest)
+        self.assertTrue((self.dest / "file1.txt").exists())
+        self.assertTrue((self.dest / "subdir" / "file2.txt").exists())
+        self.assertTrue((self.dest / "empty_file.txt").exists())
+
+    def test_restore_preserves_content(self) -> None:
+        archive_dir(self.src)
+        restore_ark(self.ark, self.dest)
+        self.assertEqual((self.dest / "file1.txt").read_text(), "content of file1")
         self.assertEqual(
-            (self.restore_dir / "file1.txt").read_text(), "content of file1"
-        )
-        self.assertEqual(
-            (self.restore_dir / "subdir" / "file2.txt").read_text(),
+            (self.dest / "subdir" / "file2.txt").read_text(),
             "content of file2",
         )
-        self.assertEqual((self.restore_dir / "empty_file.txt").read_text(), "")
+        self.assertEqual((self.dest / "empty_file.txt").read_text(), "")
 
-    def test_restore_ark_with_new_files_added(self):
-        # Archive initial files
-        archive_dir(self.source_dir)
+    def test_restore_includes_incrementally_added_files(self) -> None:
+        archive_dir(self.src)
+        (self.src / "new.txt").write_text("new content")
+        archive_dir(self.src)
+        restore_ark(self.ark, self.dest)
+        self.assertTrue((self.dest / "new.txt").exists())
+        self.assertEqual((self.dest / "new.txt").read_text(), "new content")
 
-        # Add new files and re-archive
-        (self.source_dir / "new_file.txt").write_text("new content")
-        archive_dir(self.source_dir)
-
-        # Clear restore directory to ensure fresh restore
-        shutil.rmtree(self.restore_dir, ignore_errors=True)
-        self.restore_dir.mkdir()
-
-        # Restore
-        restore_ark(self.archive_repo_dir, self.restore_dir)
-
-        self.assertTrue((self.restore_dir / "file1.txt").exists())
-        self.assertTrue((self.restore_dir / "subdir" / "file2.txt").exists())
-        self.assertTrue((self.restore_dir / "empty_file.txt").exists())
-        self.assertTrue((self.restore_dir / "new_file.txt").exists())
-
-        self.assertEqual((self.restore_dir / "new_file.txt").read_text(), "new content")
-
-    def test_restore_ark_empty_archive(self):
-        # Create an empty archive repo
-        self.archive_repo_dir.mkdir()
-        open_db(self.archive_repo_dir / DB_NAME).close()
-
-        # Try to restore, redirecting stdout to suppress console output
+    def test_restore_empty_archive_skips_dest_creation(self) -> None:
+        self.ark.mkdir()
+        open_db(self.ark / DB_NAME).close()
         with open("/dev/null", "w") as f, redirect_stdout(f):
-            restore_ark(self.archive_repo_dir, self.restore_dir)
+            restore_ark(self.ark, self.dest)
+        self.assertFalse(self.dest.exists())
 
-        self.assertFalse(
-            self.restore_dir.exists()
-        )  # Should not create if nothing to restore
 
-    def test_cli_archive_command(self):
-        # Using subprocess to test the CLI
-        cmd = [
-            sys.executable,
-            "-m",
-            "dirark",
-            "archive",
-            str(self.source_dir),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        self.assertIn("Successfully archived", result.stdout)
-        self.assertTrue((self.archive_repo_dir / DB_NAME).exists())
+class TestCLI(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self.tmpdir.name)
+        self.src = self.tmp / "source"
+        self.ark = self.tmp / ("source" + ARK_DIR_EXT)
+        self.dest = self.tmp / "restored"
+        self.src.mkdir()
+        (self.src / "file1.txt").write_text("content of file1")
+        (self.src / "subdir").mkdir()
+        (self.src / "subdir" / "file2.txt").write_text("content of file2")
 
-    def test_cli_restore_command(self):
-        # First, archive using CLI
-        archive_cmd = [
-            sys.executable,
-            "-m",
-            "dirark",
-            "archive",
-            str(self.source_dir),
-        ]
-        subprocess.run(archive_cmd, check=True)
+    def tearDown(self) -> None:
+        self.tmpdir.cleanup()
 
-        # Then, restore using CLI
-        restore_cmd = [
-            sys.executable,
-            "-m",
-            "dirark",
-            "restore",
-            str(self.archive_repo_dir),
-            str(self.restore_dir),
-        ]
-        result = subprocess.run(restore_cmd, capture_output=True, text=True, check=True)
-        self.assertIn("Successfully restored", result.stdout)
-        self.assertTrue((self.restore_dir / "file1.txt").exists())
-        self.assertEqual(
-            (self.restore_dir / "file1.txt").read_text(), "content of file1"
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "dirark", *args],
+            capture_output=True,
+            text=True,
         )
 
-    def test_cli_restore_command_empty_archive(self):
-        self.archive_repo_dir.mkdir()
-        open_db(self.archive_repo_dir / DB_NAME).close()
+    def test_archive_command(self) -> None:
+        result = self._run("archive", str(self.src))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Archived", result.stdout)
+        self.assertTrue((self.ark / DB_NAME).exists())
 
-        restore_cmd = [
-            sys.executable,
-            "-m",
-            "dirark",
-            "restore",
-            str(self.archive_repo_dir),
-            str(self.restore_dir),
-        ]
-        result = subprocess.run(restore_cmd, capture_output=True, text=True, check=True)
-        self.assertIn("No files found to restore in the archive.", result.stdout)
-        self.assertFalse(self.restore_dir.exists())
+    def test_restore_command(self) -> None:
+        self._run("archive", str(self.src))
+        result = self._run("restore", str(self.ark), str(self.dest))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Restored", result.stdout)
+        self.assertTrue((self.dest / "file1.txt").exists())
+        self.assertEqual((self.dest / "file1.txt").read_text(), "content of file1")
+
+    def test_restore_empty_archive(self) -> None:
+        self.ark.mkdir()
+        open_db(self.ark / DB_NAME).close()
+        result = self._run("restore", str(self.ark), str(self.dest))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("No files found", result.stdout)
+        self.assertFalse(self.dest.exists())
+
+    def test_read_command(self) -> None:
+        self._run("archive", str(self.src))
+        result = subprocess.run(
+            [sys.executable, "-m", "dirark", "read", str(self.ark), "file1.txt"],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"content of file1")
+
+    def test_read_missing_file_exits_nonzero(self) -> None:
+        self._run("archive", str(self.src))
+        result = self._run("read", str(self.ark), "nonexistent.txt")
+        self.assertNotEqual(result.returncode, 0)
