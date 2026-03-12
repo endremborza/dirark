@@ -173,7 +173,9 @@ def restore_ark(ark_dir: Path, dest_dir: Path):
         db.close()
         return
 
-    dest_dir.mkdir(parents=True, exist_ok=True)  # Create dest_dir only if there are files to restore
+    dest_dir.mkdir(
+        parents=True, exist_ok=True
+    )  # Create dest_dir only if there are files to restore
 
     # Map checksums to tar_names
     checksum_to_tar = {}
@@ -190,7 +192,9 @@ def restore_ark(ark_dir: Path, dest_dir: Path):
         if tar_name:
             tar_to_files[ark_dir / tar_name].append((rel_path, checksum))
         else:
-            print(f"Warning: Checksum {checksum} for file {rel_path} not found in objects table. Skipping.")
+            print(
+                f"Warning: Checksum {checksum} for file {rel_path} not found in objects table. Skipping."
+            )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -199,7 +203,9 @@ def restore_ark(ark_dir: Path, dest_dir: Path):
 
         for tar_path, files in tar_to_files.items():
             if not tar_path.exists():
-                print(f"Warning: Tar file {tar_path.name} not found. Some files might not be restored.")
+                print(
+                    f"Warning: Tar file {tar_path.name} not found. Some files might not be restored."
+                )
                 continue
 
             # Extract tar content to temp directory
@@ -212,4 +218,6 @@ def restore_ark(ark_dir: Path, dest_dir: Path):
                 if src_obj_path.exists():
                     shutil.copy2(src_obj_path, dest_file_path)
                 else:
-                    print(f"Warning: Object {checksum} not found in {tar_path.name}. File {rel_path} not restored.")
+                    print(
+                        f"Warning: Object {checksum} not found in {tar_path.name}. File {rel_path} not restored."
+                    )

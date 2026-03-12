@@ -89,7 +89,9 @@ class TestDirarkCore(unittest.TestCase):
         # Add new file to source
         (self.source_dir / "new_file.txt").write_text("new content")
         (self.source_dir / "another_subdir").mkdir()
-        (self.source_dir / "another_subdir" / "file3.txt").write_text("content of file3")
+        (self.source_dir / "another_subdir" / "file3.txt").write_text(
+            "content of file3"
+        )
 
         # Merge again
         archive_dir(self.source_dir)
@@ -112,7 +114,9 @@ class TestDirarkCore(unittest.TestCase):
         self.assertTrue((self.restore_dir / "subdir" / "file2.txt").exists())
         self.assertTrue((self.restore_dir / "empty_file.txt").exists())
 
-        self.assertEqual((self.restore_dir / "file1.txt").read_text(), "content of file1")
+        self.assertEqual(
+            (self.restore_dir / "file1.txt").read_text(), "content of file1"
+        )
         self.assertEqual(
             (self.restore_dir / "subdir" / "file2.txt").read_text(),
             "content of file2",
@@ -150,7 +154,9 @@ class TestDirarkCore(unittest.TestCase):
         with open("/dev/null", "w") as f, redirect_stdout(f):
             restore_ark(self.archive_repo_dir, self.restore_dir)
 
-        self.assertFalse(self.restore_dir.exists())  # Should not create if nothing to restore
+        self.assertFalse(
+            self.restore_dir.exists()
+        )  # Should not create if nothing to restore
 
     def test_cli_archive_command(self):
         # Using subprocess to test the CLI
@@ -188,7 +194,9 @@ class TestDirarkCore(unittest.TestCase):
         result = subprocess.run(restore_cmd, capture_output=True, text=True, check=True)
         self.assertIn("Successfully restored", result.stdout)
         self.assertTrue((self.restore_dir / "file1.txt").exists())
-        self.assertEqual((self.restore_dir / "file1.txt").read_text(), "content of file1")
+        self.assertEqual(
+            (self.restore_dir / "file1.txt").read_text(), "content of file1"
+        )
 
     def test_cli_restore_command_empty_archive(self):
         self.archive_repo_dir.mkdir()
