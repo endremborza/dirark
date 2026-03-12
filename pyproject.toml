@@ -1,15 +1,12 @@
 [project]
 name = "dirark"
-dynamic = ["version", "description"]
+description = "Directory archival"
+dynamic = ["version"]
 authors = [{name = "Endre Márk Borza", email = "endremborza@gmail.com"}]
 license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
-
-[project.optional-dependencies]
-test = ["branthebuilder"]
-doc = ["branthebuilder[doc]"]
 
 [project.urls]
 Homepage = "https://github.com/endremborza/dirark"
