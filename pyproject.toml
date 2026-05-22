@@ -1,6 +1,6 @@
 [project]
 name = "dirark"
-description = "Directory archival"
+description = "Archive and compress directory trees"
 dynamic = ["version"]
 authors = [{name = "Endre Márk Borza", email = "endremborza@gmail.com"}]
 license = {file = "LICENSE"}
