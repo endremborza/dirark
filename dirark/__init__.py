@@ -5,7 +5,7 @@ from .core import archive_dir, restore_ark
 from .reader import ArkReader
 from .sync import add_dir_to_remote_ark, merge_arks, pull_ark, push_ark
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "archive_dir",
