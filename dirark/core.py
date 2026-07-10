@@ -1,5 +1,6 @@
 """Core archive and restore operations."""
 
+import logging
 import shutil
 import tempfile
 from pathlib import Path
@@ -9,10 +10,12 @@ from .storage import (
     DB_NAME,
     b2sum,
     ensure_clean_outdir,
-    extract_tar_zst,
+    extract_objects,
     open_db,
     write_objects_to_tar,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def archive_dir(src_dir: Path, ark_out: Path | None = None) -> None:
@@ -26,10 +29,12 @@ def archive_dir(src_dir: Path, ark_out: Path | None = None) -> None:
     """
     if ark_out is None:
         ark_out = Path(f"{src_dir}{ARK_DIR_EXT}")
-    ark_out.mkdir(exist_ok=True, parents=True)
     ensure_clean_outdir(ark_out)
     db = open_db(ark_out / DB_NAME)
     cur = db.cursor()
+
+    existing_paths = {r[0] for r in cur.execute("SELECT path FROM files")}
+    known_objects = {r[0] for r in cur.execute("SELECT checksum FROM objects")}
 
     new_objects: dict[str, Path] = {}
     new_files: list[tuple[str, str]] = []
@@ -38,16 +43,11 @@ def archive_dir(src_dir: Path, ark_out: Path | None = None) -> None:
         if not path.is_file():
             continue
         rel = path.relative_to(src_dir).as_posix()
-        checksum = b2sum(path)
-
-        cur.execute("SELECT 1 FROM files WHERE path=?", (rel,))
-        if cur.fetchone():
+        if rel in existing_paths:
             continue
-
-        cur.execute("SELECT tar_name FROM objects WHERE checksum=?", (checksum,))
-        if cur.fetchone() is None:
+        checksum = b2sum(path)
+        if checksum not in known_objects:
             new_objects.setdefault(checksum, path)
-
         new_files.append((rel, checksum))
 
     if not new_files:
@@ -94,25 +94,26 @@ def restore_ark(ark_dir: Path, dest_dir: Path) -> None:
         if tar_name:
             by_tar.setdefault(ark_dir / tar_name, []).append((rel, checksum))
         else:
-            print(f"Warning: checksum {checksum} for {rel} not in objects.")
+            logger.warning("checksum %s for %s not in objects.", checksum, rel)
 
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        obj_dir = tmp_path / "objects"
-        obj_dir.mkdir()
+        obj_cache = Path(tmp)
 
         for tar_path, tar_files in by_tar.items():
             if not tar_path.exists():
-                print(f"Warning: {tar_path.name} not found.")
+                logger.warning("%s not found.", tar_path.name)
                 continue
 
-            extract_tar_zst(tar_path, tmp_path)
+            found = extract_objects(
+                tar_path, {cs for _, cs in tar_files}, obj_cache
+            )
 
             for rel, checksum in tar_files:
+                if checksum not in found:
+                    logger.warning(
+                        "object %s missing from %s.", checksum, tar_path.name
+                    )
+                    continue
                 dest_file = dest_dir / rel
                 dest_file.parent.mkdir(parents=True, exist_ok=True)
-                src_obj = obj_dir / checksum
-                if src_obj.exists():
-                    shutil.copy2(src_obj, dest_file)
-                else:
-                    print(f"Warning: object {checksum} missing from {tar_path.name}.")
+                shutil.copy2(obj_cache / checksum, dest_file)

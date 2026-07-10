@@ -18,5 +18,16 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "dirark/__init__.py"
 
+[tool.pytest.ini_options]
+testpaths = ["dirark/tests"]
+addopts = "--timeout=60 --timeout-method=thread"
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-timeout>=2.3.1",
+    "pytest-cov>=5.0.0",
+]

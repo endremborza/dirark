@@ -1,6 +1,5 @@
 """Sync operations between local and remote dirark archives."""
 
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -8,7 +7,7 @@ from pathlib import Path
 from .core import archive_dir
 from .storage import (
     DB_NAME,
-    extract_tar_zst,
+    extract_objects,
     open_db,
     write_objects_to_tar,
 )
@@ -65,24 +64,16 @@ def merge_arks(src_ark: Path, dst_ark: Path) -> None:
             by_tar.setdefault(tar_name, []).append(cs)
 
         with tempfile.TemporaryDirectory() as tmp:
-            staging_obj = Path(tmp) / "objects"
-            staging_obj.mkdir()
+            staging_obj = Path(tmp)
 
+            staged_cs: set[str] = set()
             for tar_name, checksums in by_tar.items():
                 src_tar = src_ark / tar_name
-                if not src_tar.exists():
-                    continue
-                with tempfile.TemporaryDirectory() as xtmp:
-                    extract_tar_zst(src_tar, Path(xtmp))
-                    for cs in checksums:
-                        obj = Path(xtmp) / "objects" / cs
-                        if obj.exists():
-                            shutil.copy2(obj, staging_obj / cs)
+                if src_tar.exists():
+                    staged_cs |= extract_objects(src_tar, checksums, staging_obj)
 
-            staged = {
-                cs: staging_obj / cs for cs in missing if (staging_obj / cs).exists()
-            }
-            if staged:
+            if staged_cs:
+                staged = {cs: staging_obj / cs for cs in staged_cs}
                 tar_name = write_objects_to_tar(dst_ark, staged)
                 for cs in staged:
                     dst_cur.execute(

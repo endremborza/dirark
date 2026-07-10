@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from dirark.core import archive_dir, restore_ark
-from dirark.storage import ARK_DIR_EXT, DB_NAME, open_db
+from dirark.storage import ARK_DIR_EXT, DB_NAME, TAR_EXT, TAR_PREFIX, open_db
 from dirark.sync import add_dir_to_remote_ark, merge_arks, pull_ark, push_ark
 
 
@@ -46,6 +46,19 @@ class TestMergeArks(unittest.TestCase):
         self.assertTrue((dest / "file_a.txt").exists())
         self.assertTrue((dest / "file_b.txt").exists())
         self.assertEqual((dest / "file_b.txt").read_text(), "content b")
+
+    def test_merge_skips_missing_source_tar(self) -> None:
+        for tar in self.ark_b.glob(f"{TAR_PREFIX}*{TAR_EXT}"):
+            tar.unlink()
+        merge_arks(self.ark_b, self.ark_a)  # must not raise
+        db = open_db(self.ark_a / DB_NAME)
+        n_files = db.execute(
+            "SELECT COUNT(*) FROM files WHERE path='file_b.txt'"
+        ).fetchone()[0]
+        n_objects = db.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
+        db.close()
+        self.assertEqual(n_files, 1)  # mapping copied
+        self.assertEqual(n_objects, 1)  # file_b's object skipped (its tar was gone)
 
     def test_merge_deduplicates_objects(self) -> None:
         src_c = self.tmp / "c"

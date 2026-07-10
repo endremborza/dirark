@@ -1,9 +1,8 @@
 """ArkReader: retrieve individual files from a dirark archive."""
 
-import tempfile
 from pathlib import Path
 
-from .storage import DB_NAME, extract_object_from_tar, open_db
+from .storage import DB_NAME, open_db, read_object_from_tar
 
 
 class ArkReader:
@@ -57,10 +56,7 @@ class ArkReader:
         if row is None:
             raise KeyError(f"File not found in ark: {path}")
         checksum, tar_name = row
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            extract_object_from_tar(self._ark_dir / tar_name, checksum, tmp_path)
-            return (tmp_path / "objects" / checksum).read_bytes()
+        return read_object_from_tar(self._ark_dir / tar_name, checksum)
 
     def close(self) -> None:
         """Close the underlying database connection."""

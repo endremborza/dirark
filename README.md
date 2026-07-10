@@ -9,7 +9,7 @@ Archives directories into compressed, deduplicated stores indexed by BLAKE2b che
 ## Requirements
 
 - Python >= 3.12
-- System utilities: `b2sum`, `rsync`, `tar`, `zstd`
+- System utilities: `rsync`, `tar`, `zstd`
 
 ## Install
 
@@ -73,6 +73,34 @@ merge_arks(Path("src.ark.d"), Path("dst.ark.d"))
 add_dir_to_remote_ark(Path("my_dir"), "user@host:/backups/archive.ark.d")
 ```
 
+## Blob Store
+
+`BlobStore` exposes the same compressed, deduplicated storage as a content-addressed
+bytes interface — useful for caching computed artifacts keyed by their content.
+
+```python
+from dirark import BlobStore
+from pathlib import Path
+
+store = BlobStore(Path("cache"))
+
+# write() stages bytes and returns their BLAKE2b checksum; it is idempotent
+checksum = store.write(b"...payload...")
+assert store.has(checksum)
+assert store.read(checksum) == b"...payload..."
+
+# write() is safe from many processes at once (atomic staging). Once writers
+# have stopped, commit() packs staged blobs into the ark's tar.zst archives.
+store.commit()
+
+# Pull blobs from another store (e.g. a per-worker shard) into this one
+store.merge_from(BlobStore(Path("worker-0")))
+```
+
+Checksums are computed with the same BLAKE2b-512 hashing used by `archive_dir`, so a blob and
+an archived file with identical content share a key and deduplicate against each
+other — including across `merge_from`.
+
 ## Storage Format
 
 An ark is a directory containing:
@@ -81,3 +109,13 @@ An ark is a directory containing:
 - `data-NNNNN.tar.zst` — zstd-compressed tars holding the actual file data (max 256 MB each)
 
 Files are deduplicated by checksum. Re-archiving a directory that hasn't changed is a no-op.
+
+## Development
+
+Performance benchmarks live in `benchmarks/` and exist to settle implementation
+trade-offs with measurement rather than assumption:
+
+```bash
+uv run python benchmarks/bench.py            # full
+uv run python benchmarks/bench.py --quick    # smaller inputs, fewer reps
+```

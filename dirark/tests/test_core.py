@@ -145,6 +145,53 @@ class TestRestoreArk(unittest.TestCase):
         self.assertFalse(self.dest.exists())
 
 
+class TestRestoreResilience(unittest.TestCase):
+    """restore_ark warns but does not abort on a corrupt or incomplete ark."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = Path(self.tmpdir.name)
+        self.src = self.tmp / "source"
+        self.ark = self.tmp / ("source" + ARK_DIR_EXT)
+        self.dest = self.tmp / "restored"
+        self.src.mkdir()
+        (self.src / "keep.txt").write_text("keep me")
+        archive_dir(self.src)
+
+    def tearDown(self) -> None:
+        self.tmpdir.cleanup()
+
+    def _restore_quietly(self) -> None:
+        with open("/dev/null", "w") as f, redirect_stdout(f):
+            restore_ark(self.ark, self.dest)
+
+    def test_missing_tar_is_skipped(self) -> None:
+        for tar in self.ark.glob(f"{TAR_PREFIX}*{TAR_EXT}"):
+            tar.unlink()
+        self._restore_quietly()
+        self.assertFalse((self.dest / "keep.txt").exists())
+
+    def test_file_with_no_object_entry_is_skipped(self) -> None:
+        db = open_db(self.ark / DB_NAME)
+        db.execute("INSERT INTO files VALUES (?, ?)", ("ghost.txt", "deadbeef"))
+        db.commit()
+        db.close()
+        self._restore_quietly()
+        self.assertTrue((self.dest / "keep.txt").exists())
+        self.assertFalse((self.dest / "ghost.txt").exists())
+
+    def test_object_missing_from_tar_is_skipped(self) -> None:
+        db = open_db(self.ark / DB_NAME)
+        tar_name = db.execute("SELECT tar_name FROM objects LIMIT 1").fetchone()[0]
+        db.execute("INSERT INTO objects VALUES (?, ?)", ("deadbeef", tar_name))
+        db.execute("INSERT INTO files VALUES (?, ?)", ("ghost.txt", "deadbeef"))
+        db.commit()
+        db.close()
+        self._restore_quietly()
+        self.assertTrue((self.dest / "keep.txt").exists())
+        self.assertFalse((self.dest / "ghost.txt").exists())
+
+
 class TestCLI(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
