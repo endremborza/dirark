@@ -147,37 +147,76 @@ def ensure_clean_outdir(ark_dir: Path) -> None:
             raise RuntimeError(f"Unexpected file in archive dir: {p}")
 
 
-def write_objects_to_tar(
+def write_objects_to_tars(
     ark_dir: Path,
     objects: dict[str, Path],
     min_tar_idx: int = 0,
-) -> str:
-    """Append objects (checksum → source path) to a tar archive in ark_dir.
+    max_tar_mb: int = MAX_TAR_MB,
+) -> dict[str, str]:
+    """Append objects (checksum → source path) to tar archives in ark_dir.
 
-    Reuses the last tar if it is under MAX_TAR_MB, otherwise creates a new
-    one. min_tar_idx can be used to avoid index collisions when merging arks.
+    Objects are packed in batches of at most max_tar_mb of source bytes, one
+    tar per batch, so tars stay bounded no matter how many objects one call
+    carries (a single object over the cap still gets its own tar). The first
+    batch coalesces into the last existing tar only when the tar plus the
+    batch's source bytes stay under the cap — small commits merge, full
+    batches always roll a fresh tar. min_tar_idx can be used to avoid index
+    collisions when merging arks.
 
-    Returns the tar filename written to.
+    Staging lives beside ark_dir — same filesystem as the output, never the
+    OS temp dir, which large batches can exceed. Leftover staging dirs from
+    a crashed run are swept on entry.
+
+    Returns checksum → tar filename for every object written.
     """
+    staging_prefix = f".{ark_dir.name}-staging-"
+    for leftover in ark_dir.parent.glob(f"{staging_prefix}*"):
+        shutil.rmtree(leftover)
+
+    max_bytes = max_tar_mb * 1024 * 1024
+    batches: list[dict[str, Path]] = [{}]
+    acc = 0
+    for checksum, src in objects.items():
+        size = src.stat().st_size
+        if batches[-1] and acc + size > max_bytes:
+            batches.append({})
+            acc = 0
+        batches[-1][checksum] = src
+        acc += size
+
     tars = list_tars(ark_dir)
-    if tars and tar_size_mb(tars[-1]) < MAX_TAR_MB:
-        tar_path = tars[-1]
-    else:
-        tar_path = next_tar_path(ark_dir, min_idx=min_tar_idx)
+    last_tar = tars[-1] if tars else None
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
-        obj_dir = tmp_dir / "objects"
-        obj_dir.mkdir(parents=True)
+    written: dict[str, str] = {}
+    for i, batch in enumerate(batches):
+        if not batch:
+            continue
+        batch_mb = sum(src.stat().st_size for src in batch.values()) / (1024 * 1024)
+        if (
+            i == 0
+            and last_tar is not None
+            and tar_size_mb(last_tar) + batch_mb <= max_tar_mb
+        ):
+            tar_path = last_tar
+        else:
+            tar_path = next_tar_path(ark_dir, min_idx=min_tar_idx)
+        with tempfile.TemporaryDirectory(
+            dir=ark_dir.parent, prefix=staging_prefix
+        ) as tmp:
+            tmp_dir = Path(tmp)
+            obj_dir = tmp_dir / "objects"
+            obj_dir.mkdir(parents=True)
 
-        if tar_path.exists():
-            extract_tar_zst(tar_path, tmp_dir)
+            if tar_path.exists():
+                extract_tar_zst(tar_path, tmp_dir)
 
-        for checksum, src in objects.items():
-            dest = obj_dir / checksum
-            if not dest.exists():
-                shutil.copy2(src, dest)
+            for checksum, src in batch.items():
+                dest = obj_dir / checksum
+                if not dest.exists():
+                    shutil.copy2(src, dest)
 
-        create_tar_zst(tmp_dir, tar_path)
+            create_tar_zst(tmp_dir, tar_path)
+        for checksum in batch:
+            written[checksum] = tar_path.name
 
-    return tar_path.name
+    return written
