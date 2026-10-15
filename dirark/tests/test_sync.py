@@ -121,6 +121,42 @@ class TestPushPullArk(unittest.TestCase):
         self.assertTrue((dest / "file1.txt").exists())
         self.assertEqual((dest / "file1.txt").read_text(), "pushed content")
 
+    def _other_ark(self) -> Path:
+        src = self.tmp / "other"
+        src.mkdir()
+        (src / "file2.txt").write_text("other content")
+        archive_dir(src)
+        return self.tmp / ("other" + ARK_DIR_EXT)
+
+    def test_push_creates_missing_remote_path(self) -> None:
+        remote = self.tmp / "deep" / "er" / "ark"
+        push_ark(self.local_ark, str(remote))
+        self.assertTrue((remote / DB_NAME).exists())
+
+    def test_diverged_pushes_both_survive(self) -> None:
+        push_ark(self.local_ark, str(self.remote))
+        push_ark(self._other_ark(), str(self.remote))
+        dest = self.tmp / "restored"
+        restore_ark(self.remote, dest)
+        self.assertEqual((dest / "file1.txt").read_text(), "pushed content")
+        self.assertEqual((dest / "file2.txt").read_text(), "other content")
+
+    def test_push_never_rewrites_remote_tars(self) -> None:
+        push_ark(self.local_ark, str(self.remote))
+        before = {p.name: p.read_bytes() for p in self.remote.glob(f"*{TAR_EXT}")}
+        push_ark(self._other_ark(), str(self.remote))
+        after = {p.name: p.read_bytes() for p in self.remote.glob(f"*{TAR_EXT}")}
+        self.assertEqual({k: after[k] for k in before}, before)
+        self.assertGreater(len(after), len(before))
+
+    def test_pull_keeps_local_only_objects(self) -> None:
+        push_ark(self._other_ark(), str(self.remote))
+        pull_ark(str(self.remote), self.local_ark)
+        dest = self.tmp / "restored"
+        restore_ark(self.local_ark, dest)
+        self.assertEqual((dest / "file1.txt").read_text(), "pushed content")
+        self.assertEqual((dest / "file2.txt").read_text(), "other content")
+
 
 class TestAddDirToRemoteArk(unittest.TestCase):
     def setUp(self) -> None:

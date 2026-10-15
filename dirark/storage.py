@@ -76,9 +76,14 @@ def next_tar_path(ark_dir: Path, min_idx: int = 0) -> Path:
     Index is max(last_existing + 1, min_idx), guaranteeing no name collision.
     """
     tars = list_tars(ark_dir)
-    last_idx = int(tars[-1].name.removesuffix(TAR_EXT).split(SEP)[-1]) if tars else 0
+    last_idx = tar_index(tars[-1].name) if tars else 0
     idx = max(last_idx + 1, min_idx)
     return ark_dir / f"{TAR_PREFIX}{idx:05d}{TAR_EXT}"
+
+
+def tar_index(tar_name: str) -> int:
+    """Return the sequence number encoded in a tar archive's file name."""
+    return int(tar_name.removesuffix(TAR_EXT).split(SEP)[-1])
 
 
 def extract_tar_zst(src: Path, dest: Path) -> None:

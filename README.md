@@ -31,14 +31,15 @@ dirark restore <ark_dir> <dest_dir>
 # Print a single file's contents to stdout
 dirark read <ark_dir> <file_path>
 
-# Push/pull ark to/from remote (local path or user@host:/path)
+# Merge an ark into a remote one and back (local path or user@host:/path);
+# only objects the other side lacks are transferred, nothing is overwritten
 dirark push <local_ark> <remote>
 dirark pull <remote> <local_ark>
 
 # Merge src_ark into dst_ark
 dirark merge <src_ark> <dst_ark>
 
-# Archive a directory and add it to an existing remote ark
+# Archive a directory and add it to a remote ark (created if absent)
 dirark add <src_dir> <remote_ark>
 ```
 
@@ -62,7 +63,7 @@ with ArkReader(Path("my_dir.ark.d")) as ark:
     checksum = ark.get_checksum("path/to/file.txt")
     data = ark.read_file("path/to/file.txt")
 
-# Remote sync
+# Remote sync: index-first merges, so arks that diverged (one per machine) can share a remote
 push_ark(Path("my_dir.ark.d"), "user@host:/backups/my_dir.ark.d")
 pull_ark("user@host:/backups/my_dir.ark.d", Path("local.ark.d"))
 
