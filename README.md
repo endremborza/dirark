@@ -95,6 +95,10 @@ store.commit()
 
 # Pull blobs from another store (e.g. a per-worker shard) into this one
 store.merge_from(BlobStore(Path("worker-0")))
+
+# Sync committed blobs with a store rooted at a remote path (staging stays local)
+store.push("user@host:/backups/cache")
+store.pull("user@host:/backups/cache")
 ```
 
 Checksums are computed with the same BLAKE2b-512 hashing used by `archive_dir`, so a blob and

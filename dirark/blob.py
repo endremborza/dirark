@@ -107,6 +107,14 @@ class BlobStore:
         if (other.ark / DB_NAME).exists():
             merge_arks(other.ark, self.ark)
 
+    def push(self, remote: str) -> None:
+        """Merge committed blobs into the store rooted at `remote`; staging stays."""
+        push_ark(self.ark, f"{remote}/{_ARK}")
+
+    def pull(self, remote: str) -> None:
+        """Merge the committed blobs of the store rooted at `remote` into this one."""
+        pull_ark(f"{remote}/{_ARK}", self.ark)
+
     def purge(self) -> None:
         if self.root.exists():
             shutil.rmtree(self.root)

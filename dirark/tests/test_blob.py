@@ -94,6 +94,20 @@ class TestBlobStore(unittest.TestCase):
         self.assertEqual(self.bs.read(cs_committed), b"committed")
         self.assertEqual(self.bs.read(cs_staged_after), b"more-staged")
 
+    def test_push_pull_carries_every_commit(self) -> None:
+        remote = str(Path(self.tmpdir.name) / "remote")
+        first = self.bs.write(b"first commit")
+        self.bs.commit()
+        self.bs.push(remote)
+        second = self.bs.write(b"second commit")
+        self.bs.commit()
+        self.bs.push(remote)
+
+        pulled = BlobStore(Path(self.tmpdir.name) / "pulled")
+        pulled.pull(remote)
+        self.assertEqual(pulled.read(first), b"first commit")
+        self.assertEqual(pulled.read(second), b"second commit")
+
     def test_purge_removes_root(self) -> None:
         self.bs.write(b"gone")
         self.bs.commit()
