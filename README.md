@@ -111,7 +111,7 @@ other — including across `merge_from`.
 An ark is a directory containing:
 
 - `index.sqlite` — maps file paths to BLAKE2b checksums, and checksums to tar archives
-- `data-NNNNN.tar.zst` — zstd-compressed tars holding the actual file data (max 256 MB each)
+- `data-NNNNN.tar.zst` — zstd-compressed tars holding the actual file data (batched at ~256 MB of source bytes each; a single larger file gets its own tar)
 
 Files are deduplicated by checksum. Re-archiving a directory that hasn't changed is a no-op.
 

@@ -25,9 +25,9 @@ from .storage import (
     b2sum_bytes,
     open_db,
     read_object_from_tar,
-    write_objects_to_tar,
+    write_objects_to_tars,
 )
-from .sync import merge_arks
+from .sync import merge_arks, pull_ark, push_ark
 
 _STAGING = "staging"
 _ARK = "ark"
@@ -88,8 +88,8 @@ class BlobStore:
             if cur.fetchone() is None:
                 new_objects[p.name] = p
         if new_objects:
-            tar_name = write_objects_to_tar(self.ark, new_objects)
-            for checksum in new_objects:
+            written = write_objects_to_tars(self.ark, new_objects)
+            for checksum, tar_name in written.items():
                 cur.execute(
                     "INSERT OR IGNORE INTO objects VALUES (?, ?)",
                     (checksum, tar_name),

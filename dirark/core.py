@@ -8,17 +8,22 @@ from pathlib import Path
 from .storage import (
     ARK_DIR_EXT,
     DB_NAME,
+    MAX_TAR_MB,
     b2sum,
     ensure_clean_outdir,
     extract_objects,
     open_db,
-    write_objects_to_tar,
+    write_objects_to_tars,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def archive_dir(src_dir: Path, ark_out: Path | None = None) -> None:
+def archive_dir(
+    src_dir: Path,
+    ark_out: Path | None = None,
+    max_tar_mb: int = MAX_TAR_MB,
+) -> None:
     """Archive src_dir into a content-addressed store.
 
     By default the archive is created at src_dir + ARK_DIR_EXT. Pass ark_out
@@ -26,6 +31,10 @@ def archive_dir(src_dir: Path, ark_out: Path | None = None) -> None:
 
     Archiving is idempotent: re-running on the same directory is a no-op.
     Files with duplicate content are deduplicated by BLAKE2b checksum.
+
+    Work streams in ~max_tar_mb batches, each committed to the index as it
+    is packed — an interrupted run keeps everything packed so far and
+    resumes where it left off.
     """
     if ark_out is None:
         ark_out = Path(f"{src_dir}{ARK_DIR_EXT}")
@@ -36,8 +45,24 @@ def archive_dir(src_dir: Path, ark_out: Path | None = None) -> None:
     existing_paths = {r[0] for r in cur.execute("SELECT path FROM files")}
     known_objects = {r[0] for r in cur.execute("SELECT checksum FROM objects")}
 
-    new_objects: dict[str, Path] = {}
-    new_files: list[tuple[str, str]] = []
+    max_bytes = max_tar_mb * 1024 * 1024
+    batch_objects: dict[str, Path] = {}
+    batch_files: list[tuple[str, str]] = []
+    acc = 0
+
+    def flush() -> None:
+        nonlocal batch_objects, batch_files, acc
+        if batch_objects:
+            written = write_objects_to_tars(
+                ark_out, batch_objects, max_tar_mb=max_tar_mb
+            )
+            for checksum, tar_name in written.items():
+                cur.execute("INSERT INTO objects VALUES (?, ?)", (checksum, tar_name))
+                known_objects.add(checksum)
+        for rel, checksum in batch_files:
+            cur.execute("INSERT INTO files VALUES (?, ?)", (rel, checksum))
+        db.commit()
+        batch_objects, batch_files, acc = {}, [], 0
 
     for path in sorted(src_dir.rglob("*")):
         if not path.is_file():
@@ -46,23 +71,14 @@ def archive_dir(src_dir: Path, ark_out: Path | None = None) -> None:
         if rel in existing_paths:
             continue
         checksum = b2sum(path)
-        if checksum not in known_objects:
-            new_objects.setdefault(checksum, path)
-        new_files.append((rel, checksum))
+        if checksum not in known_objects and checksum not in batch_objects:
+            batch_objects[checksum] = path
+            acc += path.stat().st_size
+        batch_files.append((rel, checksum))
+        if acc >= max_bytes:
+            flush()
 
-    if not new_files:
-        db.close()
-        return
-
-    if new_objects:
-        tar_name = write_objects_to_tar(ark_out, new_objects)
-        for checksum in new_objects:
-            cur.execute("INSERT INTO objects VALUES (?, ?)", (checksum, tar_name))
-
-    for rel, checksum in new_files:
-        cur.execute("INSERT INTO files VALUES (?, ?)", (rel, checksum))
-
-    db.commit()
+    flush()
     db.close()
 
 
@@ -104,9 +120,7 @@ def restore_ark(ark_dir: Path, dest_dir: Path) -> None:
                 logger.warning("%s not found.", tar_path.name)
                 continue
 
-            found = extract_objects(
-                tar_path, {cs for _, cs in tar_files}, obj_cache
-            )
+            found = extract_objects(tar_path, {cs for _, cs in tar_files}, obj_cache)
 
             for rel, checksum in tar_files:
                 if checksum not in found:

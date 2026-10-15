@@ -17,7 +17,7 @@ from dirark.storage import (
     next_tar_path,
     open_db,
     tar_size_mb,
-    write_objects_to_tar,
+    write_objects_to_tars,
 )
 
 
@@ -114,11 +114,28 @@ class TestStoragePrimitives(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ensure_clean_outdir(ark)
 
-    def test_write_objects_to_tar(self) -> None:
+    def test_write_objects_to_tars(self) -> None:
         ark = self.tmp / "ark.ark.d"
         ark.mkdir()
         open_db(ark / DB_NAME).close()
         cs = b2sum(self.src / "a.txt")
-        tar_name = write_objects_to_tar(ark, {cs: self.src / "a.txt"})
-        self.assertTrue((ark / tar_name).exists())
-        self.assertEqual(tar_name, f"{TAR_PREFIX}00001{TAR_EXT}")
+        written = write_objects_to_tars(ark, {cs: self.src / "a.txt"})
+        self.assertEqual(set(written), {cs})
+        self.assertTrue((ark / written[cs]).exists())
+        self.assertEqual(written[cs], f"{TAR_PREFIX}00001{TAR_EXT}")
+
+    def test_write_objects_to_tars_rolls_over_at_cap(self) -> None:
+        ark = self.tmp / "ark.ark.d"
+        ark.mkdir()
+        open_db(ark / DB_NAME).close()
+        objects = {}
+        for i in range(3):
+            f = self.src / f"big{i}.bin"
+            f.write_bytes(bytes([i]) * (1024 * 1024 + 1))
+            objects[b2sum(f)] = f
+        written = write_objects_to_tars(ark, objects, max_tar_mb=1)
+        self.assertEqual(len(list_tars(ark)), 3)
+        self.assertEqual(len(set(written.values())), 3)
+        for tar_name in written.values():
+            self.assertTrue((ark / tar_name).exists())
+        self.assertFalse(list(ark.parent.glob(".ark.ark.d-staging-*")))

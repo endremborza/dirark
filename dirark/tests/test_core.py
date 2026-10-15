@@ -26,6 +26,20 @@ class TestArchiveDir(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmpdir.cleanup()
 
+    def test_large_batch_rolls_into_bounded_tars(self) -> None:
+        for i in range(4):
+            (self.src / f"big{i}.bin").write_bytes(bytes([i]) * (1024 * 1024 + 1))
+        archive_dir(self.src, max_tar_mb=1)
+        tars = list(self.ark.glob(f"{TAR_PREFIX}*{TAR_EXT}"))
+        self.assertGreaterEqual(len(tars), 4)
+        restored = self.tmp / "restored"
+        restore_ark(self.ark, restored)
+        for i in range(4):
+            self.assertEqual(
+                (restored / f"big{i}.bin").read_bytes(),
+                bytes([i]) * (1024 * 1024 + 1),
+            )
+
     def test_initial_archive_creates_structure(self) -> None:
         archive_dir(self.src)
         self.assertTrue(self.ark.exists())
