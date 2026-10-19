@@ -65,11 +65,6 @@ def list_tars(ark_dir: Path) -> list[Path]:
     return sorted(ark_dir.glob(f"{TAR_PREFIX}*{TAR_EXT}"))
 
 
-def tar_size_mb(path: Path) -> float:
-    """Return file size in megabytes."""
-    return path.stat().st_size / (1024 * 1024)
-
-
 def next_tar_path(ark_dir: Path, min_idx: int = 0) -> Path:
     """Return path for the next tar archive in ark_dir.
 
@@ -158,10 +153,11 @@ def write_objects_to_tars(
     Objects are packed in batches of at most max_tar_mb of source bytes, one
     tar per batch, so tars stay bounded no matter how many objects one call
     carries (a single object over the cap still gets its own tar). The first
-    batch coalesces into the last existing tar only when the tar plus the
-    batch's source bytes stay under the cap — small commits merge, full
-    batches always roll a fresh tar. min_tar_idx can be used to avoid index
-    collisions when merging arks.
+    batch coalesces into the last existing tar only when the source bytes
+    already in it plus the batch's stay under the cap — small commits merge,
+    full batches always roll a fresh tar. The tar's compressed size screens
+    out tars that cannot fit; the rest are unpacked and measured. min_tar_idx
+    can be used to avoid index collisions when merging arks.
 
     Staging lives beside ark_dir — same filesystem as the output, never the
     OS temp dir, which large batches can exceed. Leftover staging dirs from
@@ -175,14 +171,14 @@ def write_objects_to_tars(
 
     max_bytes = max_tar_mb * 1024 * 1024
     batches: list[dict[str, Path]] = [{}]
-    acc = 0
+    batch_bytes = [0]
     for checksum, src in objects.items():
         size = src.stat().st_size
-        if batches[-1] and acc + size > max_bytes:
+        if batches[-1] and batch_bytes[-1] + size > max_bytes:
             batches.append({})
-            acc = 0
+            batch_bytes.append(0)
         batches[-1][checksum] = src
-        acc += size
+        batch_bytes[-1] += size
 
     tars = list_tars(ark_dir)
     last_tar = tars[-1] if tars else None
@@ -191,24 +187,24 @@ def write_objects_to_tars(
     for i, batch in enumerate(batches):
         if not batch:
             continue
-        batch_mb = sum(src.stat().st_size for src in batch.values()) / (1024 * 1024)
-        if (
-            i == 0
-            and last_tar is not None
-            and tar_size_mb(last_tar) + batch_mb <= max_tar_mb
-        ):
-            tar_path = last_tar
-        else:
-            tar_path = next_tar_path(ark_dir, min_idx=min_tar_idx)
         with tempfile.TemporaryDirectory(
             dir=ark_dir.parent, prefix=staging_prefix
         ) as tmp:
             tmp_dir = Path(tmp)
             obj_dir = tmp_dir / "objects"
-            obj_dir.mkdir(parents=True)
-
-            if tar_path.exists():
-                extract_tar_zst(tar_path, tmp_dir)
+            tar_path = next_tar_path(ark_dir, min_idx=min_tar_idx)
+            if (
+                i == 0
+                and last_tar is not None
+                and last_tar.stat().st_size + batch_bytes[0] <= max_bytes
+            ):
+                extract_tar_zst(last_tar, tmp_dir)
+                packed = sum(p.stat().st_size for p in obj_dir.iterdir())
+                if packed + batch_bytes[0] <= max_bytes:
+                    tar_path = last_tar
+                else:
+                    shutil.rmtree(obj_dir)
+            obj_dir.mkdir(exist_ok=True)
 
             for checksum, src in batch.items():
                 dest = obj_dir / checksum

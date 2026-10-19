@@ -16,7 +16,6 @@ from dirark.storage import (
     list_tars,
     next_tar_path,
     open_db,
-    tar_size_mb,
     write_objects_to_tars,
 )
 
@@ -76,11 +75,6 @@ class TestStoragePrimitives(unittest.TestCase):
         names = [t.name for t in tars]
         self.assertEqual(names, sorted(names))
 
-    def test_tar_size_mb(self) -> None:
-        tar = self.tmp / f"test{TAR_EXT}"
-        create_tar_zst(self.src, tar)
-        self.assertGreater(tar_size_mb(tar), 0)
-
     def test_next_tar_path_first(self) -> None:
         ark = self.tmp / "ark.ark.d"
         ark.mkdir()
@@ -139,3 +133,14 @@ class TestStoragePrimitives(unittest.TestCase):
         for tar_name in written.values():
             self.assertTrue((ark / tar_name).exists())
         self.assertFalse(list(ark.parent.glob(".ark.ark.d-staging-*")))
+
+    def test_coalescing_counts_source_bytes_not_compressed_size(self) -> None:
+        ark = self.tmp / "ark.ark.d"
+        ark.mkdir()
+        tars = []
+        for i in range(3):
+            f = self.src / f"compressible{i}.bin"
+            f.write_bytes(bytes([i]) * (1024 * 1024 * 2 // 5))
+            tars += write_objects_to_tars(ark, {b2sum(f): f}, max_tar_mb=1).values()
+        self.assertEqual(tars[0], tars[1])
+        self.assertNotEqual(tars[1], tars[2])
