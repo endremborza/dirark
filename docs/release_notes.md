@@ -1,3 +1,9 @@
+## v0.4.1
+
+fix relative package
+
+---
+
 ## v0.4.0
 
 heavy optimization and dispatch
