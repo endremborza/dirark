@@ -9,6 +9,7 @@ from pathlib import Path
 from .core import archive_dir
 from .storage import (
     DB_NAME,
+    MAX_TAR_MB,
     extract_objects,
     open_db,
     tar_index,
@@ -16,7 +17,7 @@ from .storage import (
 )
 
 
-def push_ark(local_ark: Path, remote: str) -> None:
+def push_ark(local_ark: Path, remote: str, *, max_tar_mb: int = MAX_TAR_MB) -> None:
     """Merge local_ark into the ark at remote via rsync, creating it if absent.
 
     Index-first: only the remote index is fetched; objects it lacks are packed
@@ -31,12 +32,12 @@ def push_ark(local_ark: Path, remote: str) -> None:
         staged.mkdir()
         _rsync("--mkpath", f"{staged}/", f"{remote}/")
         _rsync("--ignore-missing-args", f"{remote}/{DB_NAME}", f"{staged}/")
-        merge_arks(local_ark, staged)
+        merge_arks(local_ark, staged, max_tar_mb=max_tar_mb)
         # -c: the merged index can match the remote's size and mtime second
         _rsync("-c", f"{staged}/", f"{remote}/")
 
 
-def pull_ark(remote: str, local_ark: Path) -> None:
+def pull_ark(remote: str, local_ark: Path, *, max_tar_mb: int = MAX_TAR_MB) -> None:
     """Merge the ark at remote into local_ark via rsync; local-only objects stay.
 
     Index-first: fetches the remote index, then only the tars holding objects
@@ -57,16 +58,17 @@ def pull_ark(remote: str, local_ark: Path) -> None:
             tars = sorted(set(_missing_objects(src_db, dst_db).values()))
         if tars:
             _rsync("--files-from=-", f"{remote}/", f"{fetched}/", stdin="\n".join(tars))
-        merge_arks(fetched, local_ark)
+        merge_arks(fetched, local_ark, max_tar_mb=max_tar_mb)
 
 
-def merge_arks(src_ark: Path, dst_ark: Path) -> None:
+def merge_arks(src_ark: Path, dst_ark: Path, *, max_tar_mb: int = MAX_TAR_MB) -> None:
     """Merge all objects and file mappings from src_ark into dst_ark.
 
     Objects already present in dst by checksum are skipped (deduplication).
     File path mappings are added with INSERT OR IGNORE, so existing paths
     in dst take precedence. New tars are numbered past every tar dst's index
-    references, so dst may be an index-only copy of a remote ark.
+    references, so dst may be an index-only copy of a remote ark, and hold at
+    most max_tar_mb of source bytes each.
     """
     dst_ark.mkdir(parents=True, exist_ok=True)
     src_db = open_db(src_ark / DB_NAME)
@@ -91,7 +93,9 @@ def merge_arks(src_ark: Path, dst_ark: Path) -> None:
                 staged = {cs: staging_obj / cs for cs in staged_cs}
                 indexed = dst_db.execute("SELECT DISTINCT tar_name FROM objects")
                 min_idx = 1 + max((tar_index(n) for (n,) in indexed), default=0)
-                written = write_objects_to_tars(dst_ark, staged, min_tar_idx=min_idx)
+                written = write_objects_to_tars(
+                    dst_ark, staged, min_tar_idx=min_idx, max_tar_mb=max_tar_mb
+                )
                 dst_db.executemany(
                     "INSERT OR IGNORE INTO objects VALUES (?, ?)", written.items()
                 )
