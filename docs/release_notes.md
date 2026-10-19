@@ -1,3 +1,9 @@
+## v0.4.0
+
+heavy optimization and dispatch
+
+---
+
 ## v0.3.0
 
 sync and tests
