@@ -6,10 +6,16 @@ authors = [{name = "Endre Márk Borza", email = "endremborza@gmail.com"}]
 license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["protocli"]
+
+[project.scripts]
+dirark = "dirark.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/endremborza/dirark"
+
+[tool.uv.sources]
+protocli = { path = "../protocli", editable = true }
 
 [build-system]
 requires = ["hatchling"]

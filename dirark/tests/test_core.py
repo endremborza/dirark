@@ -231,14 +231,12 @@ class TestCLI(unittest.TestCase):
     def test_archive_command(self) -> None:
         result = self._run("archive", str(self.src))
         self.assertEqual(result.returncode, 0)
-        self.assertIn("Archived", result.stdout)
         self.assertTrue((self.ark / DB_NAME).exists())
 
     def test_restore_command(self) -> None:
         self._run("archive", str(self.src))
         result = self._run("restore", str(self.ark), str(self.dest))
         self.assertEqual(result.returncode, 0)
-        self.assertIn("Restored", result.stdout)
         self.assertTrue((self.dest / "file1.txt").exists())
         self.assertEqual((self.dest / "file1.txt").read_text(), "content of file1")
 

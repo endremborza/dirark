@@ -43,6 +43,8 @@ dirark merge <src_ark> <dst_ark>
 dirark add <src_dir> <remote_ark>
 ```
 
+`dirark --help-all` prints every command's arguments and flags.
+
 ## Python API
 
 ```python

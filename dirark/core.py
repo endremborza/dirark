@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 def archive_dir(
     src_dir: Path,
+    *,
     ark_out: Path | None = None,
     max_tar_mb: int = MAX_TAR_MB,
 ) -> None:
