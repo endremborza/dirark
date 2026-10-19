@@ -2,12 +2,22 @@
 
 import hashlib
 import multiprocessing as mp
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from dirark.blob import BlobStore, blob_checksum
+from dirark.blob import _UNPACK_PREFIX, _UNPACKED, BlobStore, blob_checksum
+from dirark.storage import extract_tar_zst, list_tars, read_object_from_tar
+
+_TEST_TAR_MB = 1
+_OWN_TAR = _TEST_TAR_MB * 1024 * 1024 // 2 + 1
+_THIRD_TAR = _TEST_TAR_MB * 1024 * 1024 // 3
+
+
+def _blobs(n: int, size: int) -> list[bytes]:
+    return [bytes([i]) * size for i in range(n)]
 
 
 class TestBlobStore(unittest.TestCase):
@@ -18,6 +28,15 @@ class TestBlobStore(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmpdir.cleanup()
+
+    def _commit_in_write_order(self, blobs: list[bytes]) -> list[str]:
+        checksums = []
+        for i, blob in enumerate(blobs):
+            checksums.append(self.bs.write(blob))
+            os.utime(self.bs.staging / checksums[-1], ns=(i, i))
+        with mock.patch("dirark.blob._TAR_MB", _TEST_TAR_MB):
+            self.bs.commit()
+        return checksums
 
     def test_write_returns_blake2b_hex(self) -> None:
         data = b"hello world"
@@ -59,7 +78,7 @@ class TestBlobStore(unittest.TestCase):
     def test_commit_with_empty_staging_is_noop(self) -> None:
         self.bs.commit()
         # No tar produced
-        self.assertEqual(list(self.bs.ark.glob("*.tar.zst")), [])
+        self.assertEqual(list_tars(self.bs.ark), [])
 
     def test_read_unknown_raises_keyerror(self) -> None:
         with self.assertRaises(KeyError):
@@ -72,6 +91,63 @@ class TestBlobStore(unittest.TestCase):
         self.bs.commit()
         self.assertEqual(self.bs.read(cs1), b"one")
         self.assertEqual(self.bs.read(cs2), b"two")
+
+    def test_read_sees_blobs_committed_into_the_unpacked_tar(self) -> None:
+        cs1 = self.bs.write(b"one")
+        self.bs.commit()
+        for _ in range(2):
+            self.assertEqual(self.bs.read(cs1), b"one")
+        cs2 = self.bs.write(b"two")
+        self.bs.commit()
+        self.assertEqual(len(list_tars(self.bs.ark)), 1)
+        self.assertEqual(self.bs.read(cs2), b"two")
+
+    def test_reads_in_write_order_unpack_each_tar_once(self) -> None:
+        blobs = _blobs(6, _THIRD_TAR)
+        checksums = self._commit_in_write_order(blobs)
+        self.assertEqual(len(list_tars(self.bs.ark)), 2)
+        with (
+            mock.patch("dirark.blob.extract_tar_zst", wraps=extract_tar_zst) as unpack,
+            mock.patch(
+                "dirark.blob.read_object_from_tar", wraps=read_object_from_tar
+            ) as stream,
+        ):
+            self.assertEqual([self.bs.read(c) for c in checksums], blobs)
+        self.assertEqual(unpack.call_count, 2)
+        self.assertEqual(stream.call_count, 2)
+
+    def test_reads_alternating_between_tars(self) -> None:
+        blobs = _blobs(3, _OWN_TAR)
+        checksums = self._commit_in_write_order(blobs)
+        order = [0, 1, 1, 2, 0, 0, 2, 1]
+        self.assertEqual(
+            [self.bs.read(checksums[i]) for i in order], [blobs[i] for i in order]
+        )
+
+    def test_unpacked_tars_are_bounded_and_removed_with_the_store(self) -> None:
+        for checksum in self._commit_in_write_order(_blobs(_UNPACKED + 1, _OWN_TAR)):
+            self.bs.read(checksum)
+            self.bs.read(checksum)
+        unpacked = f"{_UNPACK_PREFIX}*"
+        self.assertEqual(len(list(self.root.glob(unpacked))), _UNPACKED)
+        self.bs = BlobStore(self.root)
+        self.assertEqual(list(self.root.glob(unpacked)), [])
+
+    def test_commit_packs_in_write_order(self) -> None:
+        checksums = self._commit_in_write_order(_blobs(8, _OWN_TAR))
+        tars = [self.bs._tar_for(c) for c in checksums]
+        self.assertEqual(tars, [t.name for t in list_tars(self.bs.ark)])
+
+    def test_merge_push_pull_pack_at_the_blob_tar_size(self) -> None:
+        tmp = Path(self.tmpdir.name)
+        self._commit_in_write_order(_blobs(3, _OWN_TAR))
+        merged, pulled = BlobStore(tmp / "merged"), BlobStore(tmp / "pulled")
+        with mock.patch("dirark.blob._TAR_MB", _TEST_TAR_MB):
+            merged.merge_from(self.bs)
+            self.bs.push(str(tmp / "remote"))
+            pulled.pull(str(tmp / "remote"))
+        for ark in (merged.ark, tmp / "remote" / "ark", pulled.ark):
+            self.assertEqual(len(list_tars(ark)), 3)
 
     def test_commit_deduplicates_existing_objects(self) -> None:
         self.bs.write(b"dup")
