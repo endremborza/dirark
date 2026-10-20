@@ -41,6 +41,9 @@ dirark merge <src_ark> <dst_ark>
 
 # Archive a directory and add it to a remote ark (created if absent)
 dirark add <src_dir> <remote_ark>
+
+# Re-pack an ark in index format 1 into the current format, in place
+dirark migrate <ark>
 ```
 
 `dirark --help-all` prints every command's arguments and flags.
@@ -48,7 +51,7 @@ dirark add <src_dir> <remote_ark>
 ## Python API
 
 ```python
-from dirark import archive_dir, restore_ark, ArkReader
+from dirark import archive_dir, restore_ark, ArkReader, migrate_ark
 from dirark import push_ark, pull_ark, merge_arks, add_dir_to_remote_ark
 from pathlib import Path
 
@@ -74,12 +77,14 @@ merge_arks(Path("src.ark.d"), Path("dst.ark.d"))
 
 # Archive locally and push to remote in one step
 add_dir_to_remote_ark(Path("my_dir"), "user@host:/backups/archive.ark.d")
+
+# Re-pack a format-1 ark, local or remote
+migrate_ark("user@host:/backups/my_dir.ark.d")
 ```
 
 ## Blob Store
 
-`BlobStore` exposes the same compressed, deduplicated storage as a content-addressed
-bytes interface — useful for caching computed artifacts keyed by their content.
+`BlobStore` exposes the same compressed, deduplicated storage as a content-addressed bytes interface — useful for caching computed artifacts keyed by their content.
 
 ```python
 from dirark import BlobStore

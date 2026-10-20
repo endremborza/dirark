@@ -2,7 +2,9 @@
 
 from .blob import BlobStore, blob_checksum
 from .core import archive_dir, restore_ark
+from .migrate import migrate_ark
 from .reader import ArkReader
+from .storage import ArkFormatError
 from .sync import add_dir_to_remote_ark, merge_arks, pull_ark, push_ark
 
 __version__ = "0.4.1"
@@ -17,4 +19,6 @@ __all__ = [
     "pull_ark",
     "merge_arks",
     "add_dir_to_remote_ark",
+    "migrate_ark",
+    "ArkFormatError",
 ]

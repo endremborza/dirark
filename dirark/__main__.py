@@ -6,6 +6,7 @@ from pathlib import Path
 from protocli import Dispatcher
 
 from .core import archive_dir, restore_ark
+from .migrate import migrate_ark
 from .reader import ArkReader
 from .sync import add_dir_to_remote_ark, merge_arks, pull_ark, push_ark
 
@@ -26,6 +27,7 @@ main = Dispatcher(
         "pull": pull_ark,
         "merge": merge_arks,
         "add": add_dir_to_remote_ark,
+        "migrate": migrate_ark,
     },
 ).run
 
