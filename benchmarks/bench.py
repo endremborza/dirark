@@ -1,133 +1,89 @@
-"""Performance benchmarks for dirark.
+"""dirark's benchmark matrix: corpora × size tiers × operations, tracked per commit.
 
-Run:
-    uv run python benchmarks/bench.py            # full
-    uv run python benchmarks/bench.py --quick    # smaller inputs, fewer reps
+Run `uv run python benchmarks/bench.py <command>`:
 
-The suite exists to settle implementation trade-offs with measurement instead
-of assumption. The headline case is checksumming: the production path shells
-out to the system ``b2sum``; the suite times it against an in-process
-``hashlib`` variant across file-size regimes so the choice is data-backed.
-Add a benchmark by writing a ``bench_*`` function that returns ``list[Sample]``
-and listing it in ``main``.
+    status             corpora, their tiers, what is fetched
+    fetch [NAME...]    download and pin public corpora
+    run [REF]          measure a commit, or the working tree
+    report             write benchmarks/report.html
+    sweep CORPUS TIER  frame size study on the working tree
+
+Data lives under $DIRARK_BENCH_DATA; see docs/benchmarks.md.
 """
 
-import argparse
-import hashlib
-import os
+import random
+import shutil
 import statistics
-import tempfile
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
-from pathlib import Path
 
-from dirark.core import archive_dir
-from dirark.storage import b2sum  # production: shells out to system b2sum
+from corpora import PUBLIC, corpus_names, data_dir, fetch, manifest, tier_dir, tiers
+from measure import du, evict
+from protocli import Dispatcher
+from report import report
+from runner import READS, run
 
-KiB = 1024
-MiB = 1024 * 1024
-
-
-@dataclass
-class Sample:
-    name: str
-    seconds: list[float]
-
-    def report(self) -> str:
-        med = statistics.median(self.seconds) * 1e3
-        best = min(self.seconds) * 1e3
-        return f"  {self.name:<34} median {med:9.2f} ms   min {best:9.2f} ms"
+from dirark import ArkReader, archive_dir
+from dirark.blob import FRAME_MB
+from dirark.storage import MAX_FRAME_MB, MAX_TAR_MB
 
 
-def _hashlib_b2sum(path: Path) -> str:
-    h = hashlib.blake2b()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(MiB), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def status() -> None:
+    """List every corpus with its tiers, or say it is not fetched yet."""
+    for name in corpus_names():
+        if not (data_dir() / "corpora" / name).is_dir():
+            print(f"{name}: not fetched")
+            continue
+        files = manifest(name)
+        parts = [f"{t.name} {t.bytes / 1e9:.2f} GB/{len(t.files)}" for t in tiers(name)]
+        size = sum(e.size for e in files) / 1e9
+        print(f"{name}: {size:.2f} GB in {len(files)} files; {', '.join(parts)}")
 
 
-def _measure(name: str, fn: Callable[[], object], reps: int) -> Sample:
-    secs: list[float] = []
-    for _ in range(reps):
+def fetch_corpora(*names: str) -> None:
+    """Fetch the named public corpora, or every one not fetched yet."""
+    pending = names or [n for n in PUBLIC if not (data_dir() / "corpora" / n).exists()]
+    for name in pending:
         t0 = time.perf_counter()
-        fn()
-        secs.append(time.perf_counter() - t0)
-    return Sample(name, secs)
+        fetch(name)
+        print(f"{name}: {time.perf_counter() - t0:.0f} s")
 
 
-def _make_files(root: Path, n: int, size: int) -> list[Path]:
-    paths = []
-    for i in range(n):
-        p = root / f"f{i:05d}.bin"
-        p.write_bytes(os.urandom(size))
-        paths.append(p)
-    return paths
-
-
-def bench_checksum_small(reps: int, n: int, size: int) -> list[Sample]:
-    with tempfile.TemporaryDirectory() as tmp:
-        paths = _make_files(Path(tmp), n, size)
-        tag = f"({n} x {size // KiB or 1} KiB)"
-        return [
-            _measure(
-                f"b2sum subprocess  {tag}", lambda: [b2sum(p) for p in paths], reps
-            ),
-            _measure(
-                f"hashlib in-proc   {tag}",
-                lambda: [_hashlib_b2sum(p) for p in paths],
-                reps,
-            ),
-        ]
-
-
-def bench_checksum_large(reps: int, size: int) -> list[Sample]:
-    with tempfile.TemporaryDirectory() as tmp:
-        p = Path(tmp) / "big.bin"
-        p.write_bytes(os.urandom(size))
-        tag = f"(1 x {size // MiB} MiB)"
-        return [
-            _measure(f"b2sum subprocess  {tag}", lambda: b2sum(p), reps),
-            _measure(f"hashlib in-proc   {tag}", lambda: _hashlib_b2sum(p), reps),
-        ]
-
-
-def bench_archive(reps: int, n: int, size: int) -> list[Sample]:
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "src"
-        src.mkdir()
-        _make_files(src, n, size)
-        secs: list[float] = []
-        for i in range(reps):
-            ark = Path(tmp) / f"ark{i}"
+def sweep(corpus: str, tier: str) -> None:
+    """Archive a tier at each frame size in use; packed MiB, archive s, cold read ms."""
+    case = next(t for t in tiers(corpus) if t.name == tier)
+    src, work = tier_dir(case), data_dir() / "work"
+    sample = random.Random(case.key).sample(case.files, min(READS, len(case.files)))
+    print(f"{'frame MB':>8} {'packed MiB':>11} {'archive s':>10} {'cold read ms':>13}")
+    for frame_mb in sorted({FRAME_MB, MAX_FRAME_MB, MAX_TAR_MB}):
+        ark = work / f"sweep-{frame_mb}"
+        shutil.rmtree(ark, ignore_errors=True)
+        evict(src)
+        t0 = time.perf_counter()
+        archive_dir(src, ark_out=ark, max_frame_mb=frame_mb)
+        secs = time.perf_counter() - t0
+        cold = []
+        for e in sample:
+            evict(ark)
             t0 = time.perf_counter()
-            archive_dir(src, ark_out=ark)
-            secs.append(time.perf_counter() - t0)
-        return [Sample(f"archive_dir  ({n} x {size // KiB} KiB)", secs)]
+            with ArkReader(ark) as reader:
+                reader.read_file(e.path)
+            cold.append((time.perf_counter() - t0) * 1e3)
+        mib = du(ark) / 2**20
+        med = statistics.median(cold)
+        print(f"{frame_mb:>8} {mib:>11.1f} {secs:>10.2f} {med:>13.1f}")
+        shutil.rmtree(ark)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="dirark performance benchmarks")
-    ap.add_argument("--quick", action="store_true", help="smaller inputs, fewer reps")
-    args = ap.parse_args()
-
-    if args.quick:
-        reps, small_n, small_sz, big_sz = 3, 200, KiB, 16 * MiB
-    else:
-        reps, small_n, small_sz, big_sz = 5, 2000, KiB, 128 * MiB
-
-    groups = {
-        "checksum — many small files": bench_checksum_small(reps, small_n, small_sz),
-        "checksum — one large file": bench_checksum_large(reps, big_sz),
-        "archive_dir — many small files": bench_archive(reps, small_n, small_sz),
-    }
-    for title, samples in groups.items():
-        print(f"\n{title}")
-        for s in samples:
-            print(s.report())
-    print()
-
+main = Dispatcher(
+    "bench",
+    {
+        "status": status,
+        "fetch": fetch_corpora,
+        "run": run,
+        "report": report,
+        "sweep": sweep,
+    },
+).run
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
