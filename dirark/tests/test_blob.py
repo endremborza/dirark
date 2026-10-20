@@ -3,17 +3,27 @@
 import hashlib
 import multiprocessing as mp
 import os
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-from dirark.blob import _UNPACK_PREFIX, _UNPACKED, BlobStore, blob_checksum
-from dirark.storage import extract_tar_zst, list_tars, read_object_from_tar
+from dirark.blob import BlobStore, blob_checksum
+from dirark.storage import (
+    DB_NAME,
+    MB,
+    ArkFormatError,
+    list_tars,
+    locate,
+    open_db,
+    read_span,
+)
 
-_TEST_TAR_MB = 1
-_OWN_TAR = _TEST_TAR_MB * 1024 * 1024 // 2 + 1
-_THIRD_TAR = _TEST_TAR_MB * 1024 * 1024 // 3
+_TEST_FRAME_MB = 1
+_OWN_FRAME = _TEST_FRAME_MB * MB // 2 + 1
+_THIRD_FRAME = _TEST_FRAME_MB * MB // 3 - MB // 64
 
 
 def _blobs(n: int, size: int) -> list[bytes]:
@@ -34,9 +44,15 @@ class TestBlobStore(unittest.TestCase):
         for i, blob in enumerate(blobs):
             checksums.append(self.bs.write(blob))
             os.utime(self.bs.staging / checksums[-1], ns=(i, i))
-        with mock.patch("dirark.blob._TAR_MB", _TEST_TAR_MB):
+        with mock.patch("dirark.blob.FRAME_MB", _TEST_FRAME_MB):
             self.bs.commit()
         return checksums
+
+    def _frames(self, ark: Path) -> list[tuple[int, int]]:
+        with closing(open_db(ark / DB_NAME)) as db:
+            return db.execute(
+                "SELECT tar, offset FROM frames ORDER BY tar, offset"
+            ).fetchall()
 
     def test_write_returns_blake2b_hex(self) -> None:
         data = b"hello world"
@@ -92,62 +108,82 @@ class TestBlobStore(unittest.TestCase):
         self.assertEqual(self.bs.read(cs1), b"one")
         self.assertEqual(self.bs.read(cs2), b"two")
 
-    def test_read_sees_blobs_committed_into_the_unpacked_tar(self) -> None:
+    def test_read_sees_blobs_committed_into_a_cached_frame(self) -> None:
         cs1 = self.bs.write(b"one")
         self.bs.commit()
-        for _ in range(2):
-            self.assertEqual(self.bs.read(cs1), b"one")
+        self.assertEqual(self.bs.read(cs1), b"one")
         cs2 = self.bs.write(b"two")
         self.bs.commit()
-        self.assertEqual(len(list_tars(self.bs.ark)), 1)
+        self.assertEqual(len(self._frames(self.bs.ark)), 1)
         self.assertEqual(self.bs.read(cs2), b"two")
+        self.assertEqual(self.bs.read(cs1), b"one")
 
-    def test_reads_in_write_order_unpack_each_tar_once(self) -> None:
-        blobs = _blobs(6, _THIRD_TAR)
+    def test_small_commits_share_one_frame_and_tar(self) -> None:
+        for i in range(3):
+            self.bs.write(f"commit {i}".encode())
+            self.bs.commit()
+        self.assertEqual(len(self._frames(self.bs.ark)), 1)
+        self.assertEqual(len(list_tars(self.bs.ark)), 1)
+
+    def test_reads_in_write_order_decode_each_frame_once(self) -> None:
+        blobs = _blobs(6, _THIRD_FRAME)
         checksums = self._commit_in_write_order(blobs)
-        self.assertEqual(len(list_tars(self.bs.ark)), 2)
-        with (
-            mock.patch("dirark.blob.extract_tar_zst", wraps=extract_tar_zst) as unpack,
-            mock.patch(
-                "dirark.blob.read_object_from_tar", wraps=read_object_from_tar
-            ) as stream,
-        ):
+        self.assertEqual(len(self._frames(self.bs.ark)), 2)
+        with mock.patch("dirark.storage.read_span", wraps=read_span) as decode:
             self.assertEqual([self.bs.read(c) for c in checksums], blobs)
-        self.assertEqual(unpack.call_count, 2)
-        self.assertEqual(stream.call_count, 2)
+        self.assertEqual(decode.call_count, 2)
 
-    def test_reads_alternating_between_tars(self) -> None:
-        blobs = _blobs(3, _OWN_TAR)
+    def test_reads_alternating_between_frames(self) -> None:
+        blobs = _blobs(3, _OWN_FRAME)
         checksums = self._commit_in_write_order(blobs)
         order = [0, 1, 1, 2, 0, 0, 2, 1]
         self.assertEqual(
             [self.bs.read(checksums[i]) for i in order], [blobs[i] for i in order]
         )
 
-    def test_unpacked_tars_are_bounded_and_removed_with_the_store(self) -> None:
-        for checksum in self._commit_in_write_order(_blobs(_UNPACKED + 1, _OWN_TAR)):
-            self.bs.read(checksum)
-            self.bs.read(checksum)
-        unpacked = f"{_UNPACK_PREFIX}*"
-        self.assertEqual(len(list(self.root.glob(unpacked))), _UNPACKED)
-        self.bs = BlobStore(self.root)
-        self.assertEqual(list(self.root.glob(unpacked)), [])
+    def test_decoded_frames_stay_within_the_cache_budget(self) -> None:
+        checksums = self._commit_in_write_order(_blobs(2, _OWN_FRAME))
+        with (
+            mock.patch("dirark.storage.READ_CACHE_MB", _TEST_FRAME_MB),
+            mock.patch("dirark.storage.read_span", wraps=read_span) as decode,
+        ):
+            for i in (0, 1, 0):
+                self.bs.read(checksums[i])
+        self.assertEqual(decode.call_count, 3)
 
     def test_commit_packs_in_write_order(self) -> None:
-        checksums = self._commit_in_write_order(_blobs(8, _OWN_TAR))
-        tars = [self.bs._tar_for(c) for c in checksums]
-        self.assertEqual(tars, [t.name for t in list_tars(self.bs.ark)])
+        checksums = self._commit_in_write_order(_blobs(8, _OWN_FRAME))
+        db = open_db(self.bs.ark / DB_NAME)
+        locs = [locate(db, bytes.fromhex(c)) for c in checksums]
+        db.close()
+        spans = [(loc.tar, loc.offset) for loc in locs if loc is not None]
+        self.assertEqual(spans, self._frames(self.bs.ark))
 
-    def test_merge_push_pull_pack_at_the_blob_tar_size(self) -> None:
+    def test_merge_push_pull_keep_the_blob_frames(self) -> None:
         tmp = Path(self.tmpdir.name)
-        self._commit_in_write_order(_blobs(3, _OWN_TAR))
+        self._commit_in_write_order(_blobs(3, _OWN_FRAME))
         merged, pulled = BlobStore(tmp / "merged"), BlobStore(tmp / "pulled")
-        with mock.patch("dirark.blob._TAR_MB", _TEST_TAR_MB):
-            merged.merge_from(self.bs)
-            self.bs.push(str(tmp / "remote"))
-            pulled.pull(str(tmp / "remote"))
+        merged.merge_from(self.bs)
+        self.bs.push(str(tmp / "remote"))
+        pulled.pull(str(tmp / "remote"))
         for ark in (merged.ark, tmp / "remote" / "ark", pulled.ark):
-            self.assertEqual(len(list_tars(ark)), 3)
+            self.assertEqual(len(self._frames(ark)), 3)
+
+    def test_a_held_connection_sees_commits_of_another_instance(self) -> None:
+        self.bs.write(b"first")
+        self.bs.commit()
+        self.assertTrue(self.bs.has(blob_checksum(b"first")))
+        other = BlobStore(self.root)
+        cs = other.write(b"elsewhere")
+        other.commit()
+        self.assertEqual(self.bs.read(cs), b"elsewhere")
+
+    def test_a_format_1_store_names_the_migration(self) -> None:
+        db = sqlite3.connect(self.bs.ark / DB_NAME)
+        db.execute("CREATE TABLE objects(checksum TEXT PRIMARY KEY, tar_name TEXT)")
+        db.close()
+        with self.assertRaisesRegex(ArkFormatError, "--max-frame-mb"):
+            self.bs.write(b"x")
 
     def test_commit_deduplicates_existing_objects(self) -> None:
         self.bs.write(b"dup")

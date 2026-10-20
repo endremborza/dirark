@@ -2,11 +2,38 @@
 
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from dirark.core import archive_dir, restore_ark
-from dirark.storage import ARK_DIR_EXT, DB_NAME, TAR_EXT, TAR_PREFIX, open_db
+from dirark.storage import (
+    ARK_DIR_EXT,
+    DB_NAME,
+    MB,
+    TAR_EXT,
+    TAR_PREFIX,
+    list_tars,
+    open_db,
+)
 from dirark.sync import add_dir_to_remote_ark, merge_arks, pull_ark, push_ark
+
+
+def _frame_bytes(ark: Path) -> list[bytes]:
+    """Every frame's compressed bytes, in tar and offset order."""
+    with closing(open_db(ark / DB_NAME)) as db:
+        rows = db.execute("SELECT tar, offset, length FROM frames ORDER BY tar, offset")
+        spans = rows.fetchall()
+    out = []
+    for tar, offset, length in spans:
+        with open(ark / f"{TAR_PREFIX}{tar:05d}{TAR_EXT}", "rb") as f:
+            f.seek(offset)
+            out.append(f.read(length))
+    return out
+
+
+def _count(ark: Path, table: str) -> int:
+    with closing(open_db(ark / DB_NAME)) as db:
+        return db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
 class TestMergeArks(unittest.TestCase):
@@ -78,6 +105,34 @@ class TestMergeArks(unittest.TestCase):
         self.assertEqual(n_files, 2)
         self.assertEqual(n_objects, 1)
 
+    def test_frames_dst_lacks_entirely_are_copied_verbatim(self) -> None:
+        src = self.tmp / "framed"
+        src.mkdir()
+        (src / "x.bin").write_bytes(b"x" * (MB * 3 // 5))
+        (src / "y.bin").write_bytes(b"y" * (MB * 3 // 5))
+        archive_dir(src, max_frame_mb=1)
+        ark = self.tmp / ("framed" + ARK_DIR_EXT)
+        x_only = self.tmp / "x_only"
+        x_only.mkdir()
+        (x_only / "x.bin").write_bytes(b"x" * (MB * 3 // 5))
+        archive_dir(x_only)
+        x_ark = self.tmp / ("x_only" + ARK_DIR_EXT)
+        merge_arks(ark, x_ark)
+        self.assertIn(_frame_bytes(ark)[1], _frame_bytes(x_ark))
+        self.assertEqual(_count(x_ark, "objects"), 2)
+
+    def test_only_missing_objects_of_a_shared_frame_are_repacked(self) -> None:
+        both = self.tmp / "both"
+        both.mkdir()
+        (both / "file_a.txt").write_text("content a")
+        (both / "extra.txt").write_text("extra")
+        archive_dir(both)
+        merge_arks(self.tmp / ("both" + ARK_DIR_EXT), self.ark_a)
+        self.assertEqual(_count(self.ark_a, "objects"), 2)
+        dest = self.tmp / "restored"
+        restore_ark(self.ark_a, dest)
+        self.assertEqual((dest / "extra.txt").read_text(), "extra")
+
     def test_merge_is_idempotent(self) -> None:
         merge_arks(self.ark_b, self.ark_a)
         merge_arks(self.ark_b, self.ark_a)
@@ -107,6 +162,11 @@ class TestPushPullArk(unittest.TestCase):
         self.assertTrue((self.remote / DB_NAME).exists())
         tars = list(self.remote.glob("*.tar.zst"))
         self.assertGreater(len(tars), 0)
+
+    def test_push_to_an_empty_remote_uploads_tars_unchanged(self) -> None:
+        push_ark(self.local_ark, str(self.remote))
+        local = sorted(t.read_bytes() for t in list_tars(self.local_ark))
+        self.assertEqual(sorted(t.read_bytes() for t in list_tars(self.remote)), local)
 
     def test_pull_copies_files(self) -> None:
         push_ark(self.local_ark, str(self.remote))

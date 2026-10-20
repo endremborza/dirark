@@ -1,14 +1,26 @@
 """Tests for dirark.core: archive_dir and restore_ark."""
 
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from dirark.core import archive_dir, restore_ark
-from dirark.storage import ARK_DIR_EXT, DB_NAME, TAR_EXT, TAR_PREFIX, open_db
+from dirark.reader import ArkReader
+from dirark.storage import (
+    ARK_DIR_EXT,
+    DB_NAME,
+    MB,
+    TAR_EXT,
+    TAR_PREFIX,
+    digest_bytes,
+    digest_file,
+    open_db,
+)
 
 
 class TestArchiveDir(unittest.TestCase):
@@ -28,17 +40,31 @@ class TestArchiveDir(unittest.TestCase):
 
     def test_large_batch_rolls_into_bounded_tars(self) -> None:
         for i in range(4):
-            (self.src / f"big{i}.bin").write_bytes(bytes([i]) * (1024 * 1024 + 1))
-        archive_dir(self.src, max_tar_mb=1)
+            (self.src / f"big{i}.bin").write_bytes(bytes([i]) * (MB + 1))
+        archive_dir(self.src, max_tar_mb=1, max_frame_mb=1)
         tars = list(self.ark.glob(f"{TAR_PREFIX}*{TAR_EXT}"))
         self.assertGreaterEqual(len(tars), 4)
         restored = self.tmp / "restored"
         restore_ark(self.ark, restored)
         for i in range(4):
             self.assertEqual(
-                (restored / f"big{i}.bin").read_bytes(),
-                bytes([i]) * (1024 * 1024 + 1),
+                (restored / f"big{i}.bin").read_bytes(), bytes([i]) * (MB + 1)
             )
+
+    def test_an_edited_file_is_re_archived(self) -> None:
+        archive_dir(self.src)
+        f = self.src / "file1.txt"
+        f.write_text("edited content")
+        os.utime(f, ns=(1, 1))
+        archive_dir(self.src)
+        with ArkReader(self.ark) as r:
+            self.assertEqual(r.read_file("file1.txt"), b"edited content")
+
+    def test_unchanged_files_are_not_rehashed(self) -> None:
+        archive_dir(self.src)
+        with mock.patch("dirark.core.digest_file", wraps=digest_file) as digest:
+            archive_dir(self.src)
+        self.assertEqual(digest.call_count, 0)
 
     def test_initial_archive_creates_structure(self) -> None:
         archive_dir(self.src)
@@ -143,6 +169,16 @@ class TestRestoreArk(unittest.TestCase):
         )
         self.assertEqual((self.dest / "empty_file.txt").read_text(), "")
 
+    def test_restore_preserves_mode_and_mtime(self) -> None:
+        f = self.src / "file1.txt"
+        os.chmod(f, 0o750)
+        os.utime(f, ns=(123456789, 123456789))
+        archive_dir(self.src)
+        restore_ark(self.ark, self.dest)
+        st = (self.dest / "file1.txt").stat()
+        self.assertEqual(st.st_mode & 0o777, 0o750)
+        self.assertEqual(st.st_mtime_ns, 123456789)
+
     def test_restore_includes_incrementally_added_files(self) -> None:
         archive_dir(self.src)
         (self.src / "new.txt").write_text("new content")
@@ -185,24 +221,26 @@ class TestRestoreResilience(unittest.TestCase):
         self._restore_quietly()
         self.assertFalse((self.dest / "keep.txt").exists())
 
-    def test_file_with_no_object_entry_is_skipped(self) -> None:
+    def _ghost(self, with_object: bool) -> None:
+        ghost = digest_bytes(b"ghost")
         db = open_db(self.ark / DB_NAME)
-        db.execute("INSERT INTO files VALUES (?, ?)", ("ghost.txt", "deadbeef"))
+        if with_object:
+            frame = db.execute("SELECT id FROM frames LIMIT 1").fetchone()[0]
+            db.execute("INSERT INTO objects VALUES (?, ?, 0, 5)", (ghost, frame))
+        db.execute("INSERT INTO files VALUES ('ghost.txt', ?, 0, 420)", (ghost,))
         db.commit()
         db.close()
+
+    def test_file_with_no_object_entry_is_skipped(self) -> None:
+        self._ghost(with_object=False)
         self._restore_quietly()
-        self.assertTrue((self.dest / "keep.txt").exists())
+        self.assertEqual((self.dest / "keep.txt").read_text(), "keep me")
         self.assertFalse((self.dest / "ghost.txt").exists())
 
     def test_object_missing_from_tar_is_skipped(self) -> None:
-        db = open_db(self.ark / DB_NAME)
-        tar_name = db.execute("SELECT tar_name FROM objects LIMIT 1").fetchone()[0]
-        db.execute("INSERT INTO objects VALUES (?, ?)", ("deadbeef", tar_name))
-        db.execute("INSERT INTO files VALUES (?, ?)", ("ghost.txt", "deadbeef"))
-        db.commit()
-        db.close()
+        self._ghost(with_object=True)
         self._restore_quietly()
-        self.assertTrue((self.dest / "keep.txt").exists())
+        self.assertEqual((self.dest / "keep.txt").read_text(), "keep me")
         self.assertFalse((self.dest / "ghost.txt").exists())
 
 
