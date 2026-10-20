@@ -124,14 +124,7 @@ Each tar is still a plain tar.zst — `tar -I zstd -xf data-00001.tar.zst` extra
 
 ## Development
 
-Performance is settled by measurement: `benchmarks/` runs a matrix of JSON and media corpora at several sizes against any commit, records the results per commit, and renders them as a report comparing each commit with a tagged baseline. See [docs/benchmarks.md](docs/benchmarks.md).
-
-```bash
-export DIRARK_BENCH_DATA=/path/on/a/local/disk
-uv run python benchmarks/bench.py fetch        # download the public corpora
-uv run python benchmarks/bench.py run          # measure the working tree (or: run REF)
-uv run python benchmarks/bench.py report       # write benchmarks/report.html
-```
+Performance is settled by measurement, kept outside this repo so that the benchmarks are versioned apart from the code: the `dirark` suite of ubemmer measures archiving, reading, restoring and syncing JSON and media corpora at several sizes, against any commit, compared with a tagged baseline. A commit that changes the API the suite relies on declares the next contract number as `[tool.ubemmer] contract` in `pyproject.toml`.
 
 ## Trade-offs
 

@@ -4,7 +4,7 @@ Content-addressed directory archival: BLAKE2b-keyed storage in framed zstd tars 
 
 ## Goals, in priority order
 
-1. Storage size, compute time and memory per archived byte. Performance claims are settled by measurement (the benchmark matrix in `benchmarks/`, see `docs/benchmarks.md`), never asserted; the README's *Trade-offs* section records the measured knobs.
+1. Storage size, compute time and memory per archived byte. Performance claims are settled by measurement (ubemmer's `dirark` suite, outside this repo: `ubemmer compare dirark` judges a change against its baseline), never asserted; the README's *Trade-offs* section records the measured knobs.
 2. A near-empty dependency tree: the heavy lifting runs in system binaries (`zstd`, `rsync`, `tar` for format-1 migration) and C-backed stdlib (`hashlib`, `sqlite3`); Python only orchestrates.
 3. A stable on-disk contract: an ark is `index.sqlite` + `data-NNNNN.tar.zst`, each tar readable by plain `tar -I zstd -xf`. Changing it bumps `SCHEMA_VERSION` and ships a `dirark migrate` path.
 
@@ -19,7 +19,6 @@ Content-addressed directory archival: BLAKE2b-keyed storage in framed zstd tars 
 - `dirark/__main__.py` — the `dirark` console script: protocli dispatches straight to the library functions (`archive`/`restore`/`push`/`pull`/`merge`/`add`/`migrate`), so their signatures are the CLI and keyword-only options surface as flags. `read` is the one wrapper (bytes to stdout). Success is silent; failures raise.
 - `dirark/__init__.py` — the public exports and `__version__`.
 - `dirark/tests/` — one suite per module.
-- `benchmarks/` — the benchmark matrix (`docs/benchmarks.md`): `bench.py` is its CLI, `corpora.py` fetches and pins the corpora and cuts them into tiers, `runner.py` measures a commit from a worktree and writes `results/<host>/<sha>.json`, `measure.py` is the one-op child process (stdlib plus the measured checkout only, so old commits stay measurable), `report.py` renders `report.html` from `report.template.html`. Results are committed; a change that claims a speed-up comes with a run of it and of its baseline.
 
 ## Architecture in one sentence
 
@@ -32,6 +31,7 @@ Every file/blob is hashed with BLAKE2b and stored once as a tar member inside an
 - Tars carry no end-of-archive blocks; appending a frame is a plain append.
 - Remote tars are never rewritten: a push writes fresh tars numbered past every tar the remote index references.
 - Objects are unique per checksum across an ark; `Packer` inserts fail loudly on a duplicate, so callers dedupe first.
+- ubemmer's `dirark` suite drives dirark only through the API its contract's README names; a commit that changes that API declares the next contract number as `[tool.ubemmer] contract` in `pyproject.toml`, and the suite gains a driver for it.
 
 ## Where the cost goes
 
@@ -61,5 +61,5 @@ Every file/blob is hashed with BLAKE2b and stored once as a tar member inside an
 
 ```bash
 uv run pytest
-uv run python benchmarks/bench.py run --tiers 100M,1G   # with DIRARK_BENCH_DATA set
+uv run --project ../../tools/ubemmer ubemmer compare dirark --profile quick   # with UBEMMER_DATA set
 ```
