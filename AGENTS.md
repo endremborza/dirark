@@ -6,7 +6,7 @@ Content-addressed directory archival: BLAKE2b-keyed storage in framed zstd tars 
 
 1. Storage size, compute time and memory per archived byte. Performance claims are settled by measurement (ubemmer's `dirark` suite, outside this repo: `ubemmer compare dirark` judges a change against its baseline), never asserted; the README's *Trade-offs* section records the measured knobs.
 2. A near-empty dependency tree: the heavy lifting runs in system binaries (`zstd`, `rsync`, `tar` for format-1 migration) and C-backed stdlib (`hashlib`, `sqlite3`); Python only orchestrates.
-3. A stable on-disk contract: an ark is `index.sqlite` + `data-NNNNN.tar.zst`, each tar readable by plain `tar -I zstd -xf`. Changing it bumps `SCHEMA_VERSION` and ships a `dirark migrate` path.
+3. A stable on-disk contract: an ark is `index.sqlite` + `data-NNNNN.tar.zst`, each tar readable by plain `tar -I zstd -xf`. Changing it bumps `SCHEMA_VERSION` with a minor release and ships a `dirark migrate` path from the format before; consumers pin a minor, so an ark changes format only when its owner raises the pin and migrates it.
 
 ## Where to look
 
