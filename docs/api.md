@@ -95,12 +95,18 @@ Merge all objects and file mappings from src_ark into dst_ark.
     New tars are numbered past every tar dst's index references, so dst may be
     an index-only copy of a remote ark.
 
-## `migrate_ark(ark: str, *, max_tar_mb: int = 256, max_frame_mb: int = 64) -> None`
+## `migrate_ark(ark: str, *, max_tar_mb: int = 256, max_frame_mb: int = 64, work: pathlib.Path | None = None) -> None`
 Re-pack a format-1 ark in place; a current-format ark is left alone.
 
-    ark is a local path or an rsync remote (user@host:/path). A remote is fetched
-    into a temporary dir under the working directory, migrated there, and
-    uploaded back. A BlobStore's ark takes max_frame_mb=dirark.blob.FRAME_MB.
+    ark is a local path or an rsync remote (user@host:/path). Each tar is
+    unpacked, and the new index built, in a temporary dir under work (beside the
+    ark by default: point it at a local disk for an ark on a network mount); the
+    new tars are written beside the ark. A remote is fetched into a temporary
+    dir under work (the working directory by default), migrated there, and
+    uploaded back. Every object is re-hashed against its checksum: a missing
+    tar, a missing or corrupt object, or a path without content raises
+    MigrationError and leaves the ark as it was. A BlobStore's ark takes
+    max_frame_mb=dirark.blob.FRAME_MB.
 
 ## `pull_ark(remote: str, local_ark: pathlib.Path, *, max_tar_mb: int = 256, max_frame_mb: int = 64) -> None`
 Merge the ark at remote into local_ark via rsync; local-only objects stay.

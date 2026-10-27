@@ -44,6 +44,9 @@ dirark add <src_dir> <remote_ark>
 
 # Re-pack an ark in index format 1 into the current format, in place
 dirark migrate <ark>
+
+# The same, unpacking on a local disk for an ark on a network mount
+dirark migrate <ark> --work <local_dir>
 ```
 
 `dirark --help-all` prints every command's arguments and flags.
@@ -179,7 +182,7 @@ No object is stored twice: of a frame the destination partly holds, only the mis
 ### Compatibility and concurrency
 
 - Tars carry no end-of-archive blocks, so an append is a plain append. GNU tar and Python's `tarfile` read them without complaint; other tar implementations are untested.
-- The current format is unreadable by dirark releases before it, and `dirark migrate` is one-way.
+- The current format is unreadable by dirark releases before it, and `dirark migrate` is one-way. A format change comes with a minor release: pin a minor, and migrate your arks when you raise it. Migration re-hashes every object and raises `MigrationError` on a missing tar or a missing or corrupt object, leaving the ark as it was.
 - Checksums in `index.sqlite` are BLOBs; query them with `hex(checksum)`.
 - `push_ark` is not atomic: two pushers to one remote can claim the same fresh tar name, and the later upload overwrites the earlier one's objects.
 - `BlobStore.write` is safe from many processes, but `commit` must run with no concurrent writers or readers, since it re-encodes the last frame and cuts tars back.

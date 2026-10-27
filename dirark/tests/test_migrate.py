@@ -10,7 +10,7 @@ from pathlib import Path
 
 from dirark.blob import FRAME_MB, BlobStore
 from dirark.core import restore_ark
-from dirark.migrate import _migrate_remote, migrate_ark
+from dirark.migrate import MigrationError, _migrate_remote, migrate_ark
 from dirark.reader import ArkReader
 from dirark.storage import (
     DB_NAME,
@@ -90,11 +90,50 @@ class TestMigrate(unittest.TestCase):
         migrate_ark(str(self.ark))
         self.assertEqual({t.name: t.read_bytes() for t in list_tars(self.ark)}, before)
 
+    def test_a_work_dir_holds_the_scratch_and_is_left_empty(self) -> None:
+        work = self.tmp / "work"
+        work.mkdir()
+        migrate_ark(str(self.ark), work=work)
+        self._assert_migrated(self.ark)
+        self.assertEqual(list(work.iterdir()), [])
+        self.assertEqual(
+            sorted(p.name for p in self.ark.iterdir() if p.name.startswith(".")), []
+        )
+
     def test_remote_ark_is_repacked_over_rsync(self) -> None:
         with chdir(self.tmp):
-            _migrate_remote(str(self.ark), MAX_TAR_MB, MAX_FRAME_MB)
+            _migrate_remote(str(self.ark), MAX_TAR_MB, MAX_FRAME_MB, self.tmp)
         self._assert_migrated(self.ark)
         self.assertEqual(len(list_tars(self.ark)), 1)
+
+    def _assert_refused(self) -> None:
+        before = {p.name: p.read_bytes() for p in self.ark.iterdir()}
+        with self.assertRaises(MigrationError):
+            migrate_ark(str(self.ark))
+        self.assertEqual({p.name: p.read_bytes() for p in self.ark.iterdir()}, before)
+        self.assertEqual(
+            sorted(p.name for p in self.tmp.iterdir() if p.name.startswith(".")), []
+        )
+
+    def test_a_missing_tar_is_refused(self) -> None:
+        list_tars(self.ark)[-1].unlink()
+        self._assert_refused()
+
+    def test_a_path_without_content_is_refused(self) -> None:
+        with closing(sqlite3.connect(self.ark / DB_NAME)) as db:
+            db.execute("INSERT INTO files VALUES ('ghost.txt', ?)", ("ab" * 64,))
+            db.commit()
+        self._assert_refused()
+
+    def test_a_corrupt_object_is_refused(self) -> None:
+        tar = list_tars(self.ark)[-1]
+        stage = self.tmp / "unpacked"
+        stage.mkdir()
+        subprocess.run(["tar", "-I", "zstd", "-xf", tar, "-C", stage], check=True)
+        (obj,) = (stage / "objects").iterdir()
+        obj.write_bytes(b"rot")
+        subprocess.run(["tar", "-C", stage, "-I", "zstd", "-cf", tar, "."], check=True)
+        self._assert_refused()
 
     def test_blob_store_reads_after_migration(self) -> None:
         root = self.tmp / "store"
