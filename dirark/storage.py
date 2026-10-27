@@ -63,7 +63,12 @@ class ArkFormatError(RuntimeError):
             f"{path} is index format {version}, this dirark reads"
             f" {SCHEMA_VERSION}: run `{migrate}`"
         )
-        self.path, self.version = path, version
+        self.path, self.version, self.migrate = path, version, migrate
+
+    def __reduce__(self):
+        # unpickling calls the class with `args`, which hold only the message;
+        # a worker process hands its errors back pickled
+        return type(self), (self.path, self.version, self.migrate)
 
 
 class SourceChanged(RuntimeError):

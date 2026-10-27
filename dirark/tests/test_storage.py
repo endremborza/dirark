@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import pickle
 import sqlite3
 import subprocess
 import tempfile
@@ -62,6 +63,11 @@ class TestPrimitives(unittest.TestCase):
         db.close()
         with self.assertRaisesRegex(ArkFormatError, "dirark migrate"):
             open_db(self.tmp / DB_NAME)
+
+    def test_format_error_survives_pickling(self) -> None:
+        err = ArkFormatError(self.tmp, 1, f"dirark migrate {self.tmp}")
+        back = pickle.loads(pickle.dumps(err))
+        self.assertEqual((str(back), back.version), (str(err), err.version))
 
     def test_list_tars_sorted(self) -> None:
         for idx in (2, 1):
